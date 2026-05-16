@@ -16,10 +16,8 @@ def simple_path_of_length_k(G: nx.Graph, k: int) -> bool:
     # 1. Each position is occupied by exactly one node.
     for i in range(k + 1):
         lits = [vpool.id((v, i)) for v in G.nodes()]
-        # block = CardEnc.equals(lits=lits, vpool=vpool, encoding=0)
-        # cnf.extend(block.clauses)
-        cnf.extend(CardEnc.atleast(lits=lits, vpool=vpool, encoding=0).clauses)
-        cnf.extend(CardEnc.atmost(lits=lits, vpool=vpool, encoding=0).clauses)
+        block = CardEnc.equals(lits=lits, vpool=vpool, encoding=0)
+        cnf.extend(block.clauses)
 
     # 2. Each node appears at most once.
     for v in G.nodes():
