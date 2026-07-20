@@ -5,8 +5,10 @@ from pysat.formula import CNF, IDPool
 from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
 
+from optimizations import optimize
 
-def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=None, only_out=None, leaves=None):
+
+def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
     def to_set(val):
         if val is None:
             return set()
@@ -87,6 +89,25 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=N
     if end:
         cnf.append([vpool.id((e, k)) for e in end])
 
+    # Symmetry breaking
+    if symmetry is not None:
+        orbit_groups = symmetry.get("orbit_groups", {})
+        for orbit in orbit_groups.values():
+            if len(orbit) <= 1:
+                continue
+
+            # Only the representative of each orbit is allowed to be the start node.
+            valid_starters = [v for v in orbit if 0 in allowed_positions[v]]
+            if not valid_starters:
+                continue
+
+            starters = [v for v in valid_starters if v in start]
+            representative = min(starters) if starters else min(valid_starters)
+
+            for v in orbit:
+                if v != representative:
+                    cnf.append([-vpool.id((v, 0))])
+
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
@@ -95,11 +116,12 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=N
         return None
 
 
-def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None):
+def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
     longest_path = []
 
     for k in range(1, G.number_of_nodes()):
-        path = simple_path_of_length_k(G, k, start, end, only_in, only_out, leaves)
+        path = simple_path_of_length_k(G, k, start, end, only_in, only_out, leaves, symmetry)
+
         if path is not None:
             longest_path = path
         else:
@@ -108,14 +130,14 @@ def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in
     return longest_path
 
 
-def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None):
+def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
     longest_path = []
     low = 0
     high = G.number_of_nodes() - 1
 
     while low <= high:
         mid = (low + high) // 2
-        path = simple_path_of_length_k(G, mid, start, end, only_in, only_out, leaves)
+        path = simple_path_of_length_k(G, mid, start, end, only_in, only_out, leaves, symmetry)
 
         if path is not None:
             longest_path = path
@@ -133,6 +155,7 @@ def longest_simple_path_components(C: nx.Graph):
     @lru_cache(None)
     def best_between(block_id: int, start=None, end=None):
         block = blocks[block_id]
+        symmetry = block.graph.get("symmetry")
 
         if block.number_of_nodes() == 1:
             return block.nodes()
@@ -143,7 +166,8 @@ def longest_simple_path_components(C: nx.Graph):
                 end=end,
                 only_in=block.graph.get("only_in_nodes", []),
                 only_out=block.graph.get("only_out_nodes", []),
-                leaves=block.graph.get("leaves", [])
+                leaves=block.graph.get("leaves", []),
+                symmetry=symmetry if symmetry.get("numorbits") < block.number_of_nodes() else None
             )
 
     if tree.number_of_nodes() == 1:
@@ -209,9 +233,10 @@ def longest_simple_path_components(C: nx.Graph):
 
 
 def longest_simple_path(G: nx.Graph):
+    H = optimize(G)
     longest_path = []
 
-    for C in G.graph.get("connected_components", [G]):
+    for C in H.graph.get("connected_components", [H]):
         path = longest_simple_path_components(C)
         if len(path) > len(longest_path):
             longest_path = path

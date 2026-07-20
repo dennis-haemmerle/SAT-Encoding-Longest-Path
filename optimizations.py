@@ -1,4 +1,6 @@
 import networkx as nx
+import pynauty as pn
+from collections import defaultdict
 
 
 # preprocessing
@@ -51,6 +53,8 @@ def optimize(G: nx.Graph):
         C.graph["bridge_chain_length"] = bridge_chain_length
 
         for block_id, block in enumerate(bridge_components):
+            block.graph["symmetry"] = compute_symmetry_info(block, attachments[block_id])
+
             if block.is_directed():
                 block.graph["only_in_nodes"] = [v for v in block.nodes() if block.in_degree(v) == 0]  # type: ignore
                 block.graph["only_out_nodes"] = [v for v in block.nodes() if block.out_degree(v) == 0]  # type: ignore
@@ -60,3 +64,36 @@ def optimize(G: nx.Graph):
     H.graph["connected_components"] = connected_components
 
     return H
+
+
+def compute_symmetry_info(G: nx.Graph, attachment_nodes=None):
+    attachment_nodes = set(attachment_nodes or [])
+
+    H, node_mapping, reverse_mapping = nx_to_pynauty(G)
+
+    generators, grpsize1, grpsize2, orbits, numorbits = pn.autgrp(H)
+
+    orbit_groups = defaultdict(list)
+    for i, orbit in enumerate(orbits):
+        v = reverse_mapping[i]
+        orbit_groups[orbit].append(v)
+
+    return {
+        "orbits": orbits,  # Orbit representative for each node index
+        "orbit_groups": orbit_groups,  # Groups of symmetric nodes
+        "numorbits": numorbits,  # Number of orbit groups
+        "automorphism_count": grpsize1 * (10 ** grpsize2),  # Number of graph automorphisms
+    }
+
+
+def nx_to_pynauty(G: nx.Graph) -> tuple[pn.Graph, dict, dict]:
+    node_mapping = {v: i for i, v in enumerate(G.nodes())}
+    reverse_mapping = {i: v for v, i in node_mapping.items()}
+
+    adjacency_dict = {}
+    for v in G.nodes():
+        adjacency_dict[node_mapping[v]] = {node_mapping[u] for u in G.neighbors(v)}
+
+    H = pn.Graph(number_of_vertices=G.number_of_nodes(), directed=G.is_directed(), adjacency_dict=adjacency_dict)
+
+    return H, node_mapping, reverse_mapping
