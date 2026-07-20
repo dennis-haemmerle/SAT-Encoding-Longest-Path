@@ -299,7 +299,7 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
     else:
         cnf.extend(CardEnc.equals(lits=endpoint_vars, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
-    # 6. Subtour Elimination with DFJ
+    """ # 6. Subtour Elimination with DFJ
     for r in range(2, G.number_of_nodes()):
         for subset_nodes in combinations(G.nodes(), r):
             subset_nodes = set(subset_nodes)
@@ -313,9 +313,53 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
             if diff >= 0:
                 max_true = len(subset_edges) - (diff + 1)
                 block = CardEnc.atmost(lits=subset_edges, bound=max_true, vpool=vpool, encoding=EncType.seqcounter)
-                cnf.extend(block.clauses)
+                cnf.extend(block.clauses) """
+
+    # 6. Subtour Elimination with DFJ (Lazy Cut Loop)
+    def selected_subgraph(model):
+        H = nx.Graph() if not G.is_directed() else nx.DiGraph()
+
+        for v in G.nodes():
+            if vpool.id(v) in model:
+                H.add_node(v)
+
+        for e in G.edges():
+            if edge_var(e) in model:
+                u, v = e
+                H.add_edge(u, v)
+
+        return H
+
+    def add_dfj_cut(model, cycle_nodes):
+        cycle_edges = [-edge_var((u, v)) for u, v in G.subgraph(cycle_nodes).edges() if edge_var((u, v)) in model]
+
+        if cycle_edges:
+            cnf.append(cycle_edges)
 
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
+        # DFJ Lazy Cut Loop
+        while solver.solve():
+            model = solver.get_model()
+            H = selected_subgraph(model)
+
+            comps = list(nx.weakly_connected_components(H) if H.is_directed() else nx.connected_components(H))  # type: ignore
+            cycles = []
+            for comp in comps:
+                used_edges = H.subgraph(comp).number_of_edges()
+                used_nodes = H.subgraph(comp).number_of_nodes()
+                if used_edges > 0 and used_nodes < k + 1 and used_edges >= used_nodes:
+                    cycles.append(comp)
+
+            if not cycles:
+                model = set(solver.get_model())  # type: ignore
+                assignment = [e for e in G.edges() if edge_var(e) in model]
+                return assignment
+
+            for cycle in cycles:
+                add_dfj_cut(model, cycle)
+                solver.add_clause(cnf.clauses[-1])
+
+        return None
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
             assignment = [e for e in G.edges() if edge_var(e) in model]
