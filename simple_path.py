@@ -1,7 +1,8 @@
 import networkx as nx
+from functools import lru_cache
+from itertools import combinations
 from pysat.formula import CNF, IDPool
 from pysat.card import CardEnc, EncType
-
 from pysat.solvers import Solver
 
 
@@ -89,11 +90,7 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=N
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
-            assignment = []
-            for i in range(k + 1):
-                for v in G.nodes():
-                    if vpool.id((v, i)) in model:
-                        assignment.append(v)
+            assignment = [v for i in range(k + 1) for v in G.nodes() if vpool.id((v, i)) in model]
             return assignment
         return None
 
@@ -125,5 +122,98 @@ def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in
             low = mid + 1
         else:
             high = mid - 1
+
+    return longest_path
+
+
+def longest_simple_path_components(C: nx.Graph):
+    tree = C.graph["bridge_tree"]
+    blocks = C.graph["bridge_components"]
+
+    @lru_cache(None)
+    def best_between(block_id: int, start=None, end=None):
+        block = blocks[block_id]
+
+        if block.number_of_nodes() == 1:
+            return block.nodes()
+        else:
+            return longest_simple_path_binary_search(
+                G=block,
+                start=start,
+                end=end,
+                only_in=block.graph.get("only_in_nodes", []),
+                only_out=block.graph.get("only_out_nodes", []),
+                leaves=block.graph.get("leaves", [])
+            )
+
+    if tree.number_of_nodes() == 1:
+        return best_between(block_id=0)
+
+    longest_path = []
+
+    # Only paths inside a block
+    sorted_blocks = sorted(tree.nodes, key=lambda id: len(blocks[id]), reverse=True)
+    for block_id in sorted_blocks:
+        if len(blocks[block_id]) <= len(longest_path):
+            break  # all subsequent blocks are even smaller
+        path = best_between(block_id)
+        if len(path) > len(longest_path):
+            longest_path = path
+
+    # Try out all paths in bridge_tree
+    leaves = [n for n, d in tree.degree() if d <= 1]
+    for s, t in combinations(leaves, 2):  # all possible start/end blocks
+        path = nx.shortest_path(tree, s, t)
+        path_nodes = []  # nodes of the current path
+        path_splits = []  # paths that had to be split, because they can't forward a simple path (enter_node == exit_node)
+
+        # First block
+        first_edge = tree[path[0]][path[1]]
+        first_node = first_edge["attach"][path[0]]
+        path_nodes.extend(best_between(path[0], end=first_node))
+
+        # Middle blocks
+        for i in range(1, len(path) - 1):
+            prev_block = path[i - 1]
+            current_block = path[i]
+            next_block = path[i + 1]
+
+            enter_edge = tree[prev_block][current_block]
+            exit_edge = tree[current_block][next_block]
+
+            enter_node = enter_edge["attach"][current_block]
+            exit_node = exit_edge["attach"][current_block]
+
+            if blocks[current_block].number_of_nodes() > 1 and enter_node == exit_node:
+                # Split the path if there is an invalid block inbetween
+                path_nodes.extend(best_between(current_block, start=enter_node))
+                path_splits.append(path_nodes)
+                path_nodes = []
+                path_nodes.extend(best_between(current_block, end=enter_node))
+            else:
+                path_nodes.extend(best_between(current_block, enter_node, exit_node))
+
+        # Last block
+        last_edge = tree[path[-2]][path[-1]]
+        last_node = last_edge["attach"][path[-1]]
+        path_nodes.extend(best_between(path[-1], start=last_node))
+
+        if path_splits:
+            path_splits.append(path_nodes)
+            longest_path = max(path_splits, key=len)
+        else:
+            if len(path_nodes) > len(longest_path):
+                longest_path = path_nodes
+
+    return longest_path
+
+
+def longest_simple_path(G: nx.Graph):
+    longest_path = []
+
+    for C in G.graph.get("connected_components", [G]):
+        path = longest_simple_path_components(C)
+        if len(path) > len(longest_path):
+            longest_path = path
 
     return longest_path
