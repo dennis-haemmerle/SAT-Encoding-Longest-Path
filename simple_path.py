@@ -156,14 +156,11 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
             incoming = [edge_var(e) for e in G.in_edges(v)]  # type: ignore
             outgoing = [edge_var(e) for e in G.out_edges(v)]  # type: ignore
 
-            block = CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-            cnf.extend(block.clauses)
-            block = CardEnc.atmost(lits=outgoing, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-            cnf.extend(block.clauses)
+            cnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+            cnf.extend(CardEnc.atmost(lits=outgoing, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
         else:
             incident = [edge_var(e) for e in G.edges(v)]
-            block = CardEnc.atmost(lits=incident, bound=2, vpool=vpool, encoding=EncType.seqcounter)
-            cnf.extend(block.clauses)
+            cnf.extend(CardEnc.atmost(lits=incident, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 5. Exactly two endpoints with degree 1
     if G.is_directed():
@@ -299,6 +296,64 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
     else:
         cnf.extend(CardEnc.equals(lits=endpoint_vars, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
+    # 6. Acyclicity via reachability
+    reach = {}
+    for u in G.nodes():
+        for v in G.nodes():
+            # Variables: r_{u,v} (u reaches v)
+            reach[(u, v)] = vpool.id(("reach", (u, v)))
+
+    if not G.is_directed():
+        dir_vars = {}
+        for u, v in G.edges():
+            dir_vars[(u, v)] = vpool.id(("dir", (u, v)))
+            dir_vars[(v, u)] = vpool.id(("dir", (v, u)))
+
+    for e in G.edges():
+        u, v = e
+        if G.is_directed():
+            # e_{u,v} -> r_{u,v}
+            cnf.append([-edge_var(e), reach[(u, v)]])
+        else:
+            # e_{u,v} -> (dir_{u,v} v dir_{u,v})
+            cnf.append([-edge_var(e), dir_vars[(u, v)], dir_vars[(v, u)]])
+            # e_{u,v} -> not (dir_{u,v} ∧ dir_{u,v})
+            cnf.append([-edge_var(e), -dir_vars[(u, v)], -dir_vars[(v, u)]])
+
+            # (e ∧ dir(u,v)) -> reach(u,v)
+            cnf.append([-edge_var(e), -dir_vars[(u, v)], reach[(u, v)]])
+            # (e ∧ dir(v,u)) -> reach(v,u)
+            cnf.append([-edge_var(e), -dir_vars[(v, u)], reach[(v, u)]])
+
+        for x in G.nodes():
+            if G.is_directed():
+                # e_{u,v} ∧ r_{x,u} -> r_{x,v}
+                cnf.append([-edge_var(e), -reach[(x, u)], reach[(x, v)]])
+            else:
+                # (e_{u,v} ∧ dir_{u,v} ∧ r_{x,u}) -> r_{x,v}
+                cnf.append([-edge_var(e), -dir_vars[(u, v)], -reach[(x, u)], reach[(x, v)]])
+                # (e_{u,v} ∧ dir_{v,u} ∧ r_{x,v}) -> r_{x,u}
+                cnf.append([-edge_var(e), -dir_vars[(v, u)], -reach[(x, v)], reach[(x, u)]])
+
+        # Ensure all active edges have a consistent orientation along the path
+        if not G.is_directed():
+            for e in G.edges():
+                u, v = e
+                for x in G.neighbors(v):
+                    if x == u:
+                        continue
+                    # (e_{u,v} ∧ dir_{u,v} ∧ e_{v,x}) -> dir_{v,x}
+                    cnf.append([-edge_var(e), -dir_vars[(u, v)], -edge_var((v, x)), dir_vars[(v, x)]])
+                    pass
+                for x in G.neighbors(u):
+                    if x == v:
+                        continue
+                    # (e_{u,v} ∧ dir_{v,u} ∧ e_{u,x}) -> dir_{u,x}
+                    cnf.append([-edge_var(e), -dir_vars[(v, u)], -edge_var((u, x)), dir_vars[(u, x)]])
+
+    for v in G.nodes():
+        cnf.append([-reach[(v, v)]])
+
     """ # 6. Subtour Elimination with DFJ
     for r in range(2, G.number_of_nodes()):
         for subset_nodes in combinations(G.nodes(), r):
@@ -312,10 +367,9 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
             diff = len(subset_edges) - len(subset_nodes)
             if diff >= 0:
                 max_true = len(subset_edges) - (diff + 1)
-                block = CardEnc.atmost(lits=subset_edges, bound=max_true, vpool=vpool, encoding=EncType.seqcounter)
-                cnf.extend(block.clauses) """
+                cnf.extend(CardEnc.atmost(lits=subset_edges, bound=max_true, vpool=vpool, encoding=EncType.seqcounter).clauses) """
 
-    # 6. Subtour Elimination with DFJ (Lazy Cut Loop)
+    """ # 6. Subtour Elimination with DFJ (Lazy Cut Loop)
     def selected_subgraph(model):
         H = nx.Graph() if not G.is_directed() else nx.DiGraph()
 
@@ -334,10 +388,10 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
         cycle_edges = [-edge_var((u, v)) for u, v in G.subgraph(cycle_nodes).edges() if edge_var((u, v)) in model]
 
         if cycle_edges:
-            cnf.append(cycle_edges)
+            cnf.append(cycle_edges) """
 
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
-        # DFJ Lazy Cut Loop
+        """ # DFJ Lazy Cut Loop
         while solver.solve():
             model = solver.get_model()
             H = selected_subgraph(model)
@@ -359,10 +413,10 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
                 add_dfj_cut(model, cycle)
                 solver.add_clause(cnf.clauses[-1])
 
-        return None
+        return None """
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
-            assignment = [e for e in G.edges() if edge_var(e) in model]
+            assignment = [v for v in G.nodes() if vpool.id(v) in model]
             return assignment
         return None
 
