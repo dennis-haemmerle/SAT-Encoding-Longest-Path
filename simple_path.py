@@ -336,7 +336,7 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
                 cnf.append([-edge_var(e), -dir_vars[(v, u)], -reach[(x, v)], reach[(x, u)]])
 
         # Ensure all active edges have a consistent orientation along the path
-        if not G.is_directed():
+        """ if not G.is_directed():
             for e in G.edges():
                 u, v = e
                 for x in G.neighbors(v):
@@ -349,7 +349,12 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
                     if x == v:
                         continue
                     # (e_{u,v} ∧ dir_{v,u} ∧ e_{u,x}) -> dir_{u,x}
-                    cnf.append([-edge_var(e), -dir_vars[(v, u)], -edge_var((u, x)), dir_vars[(u, x)]])
+                    cnf.append([-edge_var(e), -dir_vars[(v, u)], -edge_var((u, x)), dir_vars[(u, x)]]) """
+        # Ensure all active edges have a consistent orientation along the path
+        if not G.is_directed():
+            for v in G.nodes():
+                incoming = [dir_vars[(u, v)] for u in G.neighbors(v)]
+                cnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     for v in G.nodes():
         cnf.append([-reach[(v, v)]])
