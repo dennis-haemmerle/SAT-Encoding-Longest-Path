@@ -12,54 +12,64 @@ def optimize(G: nx.Graph):
 
     if H.is_directed():
         connected_components = [H.subgraph(c).copy() for c in nx.weakly_connected_components(H)]  # type: ignore
+
+        for C in connected_components:
+            strongly_connected_components = list(nx.strongly_connected_components(C))  # type: ignore
+            # the condensation DAG stores each strongly connected component in a node
+            condensation = nx.condensation(C, strongly_connected_components)  # type: ignore
+
+            # map original edges to edges between SCC nodes
+            for u, v in condensation.edges():
+                condensation.edges[u, v]["original_edges"] = []
+
+            mapping = condensation.graph["mapping"]
+            for u, v in C.edges():
+                u_scc = mapping[u]
+                v_scc = mapping[v]
+                if u_scc != v_scc:
+                    condensation.edges[u_scc, v_scc]["original_edges"].append((u, v))
+
+            for scc_id in condensation.nodes:
+                # store subgraph for each SCC node
+                scc_nodes = list(condensation.nodes[scc_id]["members"])
+                subgraph = C.subgraph(scc_nodes).copy()
+                condensation.nodes[scc_id]["type"] = "strongly_connected_component"
+                condensation.nodes[scc_id]["subgraph"] = subgraph
+
+                # compute symmetry for each SCC node
+                condensation.nodes[scc_id]["symmetry"] = compute_symmetry_info(subgraph)
+
+            C.graph["condensation_dag"] = condensation
     else:
         connected_components = [H.subgraph(c).copy() for c in nx.connected_components(H)]
 
-    for C in connected_components:
-        bridges = list(nx.bridges(C))
+        for C in connected_components:
+            # compute_bridge_connectivity_info(C)
+            cut_nodes = list(nx.articulation_points(C))
+            biconnected_components = list(nx.biconnected_components(C))
 
-        # blocks after removing the bridges
-        graph_without_bridges = C.copy()
-        graph_without_bridges.remove_edges_from(bridges)
-        bridge_components = [graph_without_bridges.subgraph(c).copy() for c in nx.connected_components(graph_without_bridges)]
+            block_cut_tree = nx.Graph()
 
-        # node -> block_id
-        node_to_block = {}
-        for block_id, nodes in enumerate(nx.connected_components(graph_without_bridges)):
-            for n in nodes:
-                node_to_block[n] = block_id
+            # add cut nodes to the block cut tree
+            for node in cut_nodes:
+                block_cut_tree.add_node(node, type="cut_node")
 
-        attachments = [set() for _ in bridge_components]
+            # add biconnected blocks as nodes and store their corresponding subgraphs
+            for block_id, nodes in enumerate(biconnected_components):
+                block_cut_tree.add_node(f"block{block_id}", type="block", subgraph=C.subgraph(nodes).copy())
 
-        # the bridge tree connects the blocks with the bridges
-        bridge_tree = nx.Graph()
-        bridge_tree.add_nodes_from(range(len(bridge_components)))
+                # connect the block to all its incident cut nodes
+                for n in nodes:
+                    if n in cut_nodes:
+                        block_cut_tree.add_edge(f"block{block_id}", n)
 
-        for u, v in bridges:
-            block_u = node_to_block[u]
-            block_v = node_to_block[v]
+            # compute symmetry for each block
+            for block in block_cut_tree.nodes():
+                if block_cut_tree.nodes[block]["type"] == "block":
+                    subgraph = block_cut_tree.nodes[block]["subgraph"]
+                    block_cut_tree.nodes[block]["symmetry"] = compute_symmetry_info(subgraph)
 
-            attachments[block_u].add(u)
-            attachments[block_v].add(v)
-
-            bridge_tree.add_edge(block_u, block_v, bridge=(u, v), attach={block_u: u, block_v: v})
-
-        # length of the longest bridge chain
-        bridge_chain_length = 0 if bridge_tree.number_of_nodes() <= 1 else nx.diameter(bridge_tree)
-
-        C.graph["bridges"] = bridges
-        C.graph["bridge_components"] = bridge_components  # 2_edge_connected_components
-        C.graph["bridge_tree"] = bridge_tree
-        C.graph["bridge_chain_length"] = bridge_chain_length
-
-        for block_id, block in enumerate(bridge_components):
-            block.graph["symmetry"] = compute_symmetry_info(block, attachments[block_id])
-
-            if block.is_directed():
-                block.graph["only_in_nodes"] = [v for v in block.nodes() if block.in_degree(v) == 0]  # type: ignore
-                block.graph["only_out_nodes"] = [v for v in block.nodes() if block.out_degree(v) == 0]  # type: ignore
-            else:
-                block.graph["leaves"] = [v for v in block.nodes() if block.degree(v) == 1]
+            C.graph["block_cut_tree"] = block_cut_tree
 
     H.graph["connected_components"] = connected_components
 

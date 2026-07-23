@@ -1,5 +1,4 @@
 import networkx as nx
-from functools import lru_cache
 from itertools import combinations
 from pysat.formula import CNF, IDPool
 from pysat.card import CardEnc, EncType
@@ -335,8 +334,8 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
                 # (e_{u,v} ∧ dir_{v,u} ∧ r_{x,v}) -> r_{x,u}
                 cnf.append([-edge_var(e), -dir_vars[(v, u)], -reach[(x, v)], reach[(x, u)]])
 
-        # Ensure all active edges have a consistent orientation along the path
-        """ if not G.is_directed():
+        """ # Ensure all active edges have a consistent orientation along the path
+        if not G.is_directed():
             for e in G.edges():
                 u, v = e
                 for x in G.neighbors(v):
@@ -440,6 +439,16 @@ def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in
     return longest_path
 
 
+def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
+    for k in range(G.number_of_nodes() - 1, 0, -1):
+        path = simple_path_of_length_k(G, k, start, end, only_in, only_out, leaves, symmetry)
+
+        if path is not None:
+            return path
+
+    return []
+
+
 def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
     longest_path = []
     low = 0
@@ -459,87 +468,154 @@ def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in
 
 
 def longest_simple_path_components(C: nx.Graph):
-    tree = C.graph["bridge_tree"]
-    blocks = C.graph["bridge_components"]
+    if C.is_directed():
+        dag = C.graph["condensation_dag"]
 
-    @lru_cache(None)
-    def best_between(block_id: int, start=None, end=None):
-        block = blocks[block_id]
-        symmetry = block.graph.get("symmetry")
+        if dag.number_of_nodes() == 0:
+            return []
+        if dag.number_of_nodes() == 1:
+            scc = next(iter(dag.nodes))
+            subgraph = dag.nodes[scc]["subgraph"]
+            return longest_simple_path_binary_search(subgraph)
 
-        if block.number_of_nodes() == 1:
-            return block.nodes()
-        else:
+        longest_path = []
+
+        # Find the longest path by checking paths between all pairs of blocks
+        for start_scc, end_scc in combinations(dag.nodes, 2):
+            # Check both directions for a path in topological order
+            for src, dst in [(start_scc, end_scc), (end_scc, start_scc)]:
+                if not nx.has_path(dag, src, dst):
+                    continue
+
+                # Try all simple paths in the condensations DAG
+                for dag_path in nx.all_simple_paths(dag, src, dst):
+                    current_path = []
+                    valid_dag_path = True
+                    scc_connections = {}
+
+                    # Collect possible connecting edges between consecutive SCCs
+                    for i in range(len(dag_path) - 1):
+                        u_scc = dag_path[i]
+                        v_scc = dag_path[i + 1]
+                        possible_edges = dag.edges[u_scc, v_scc]["original_edges"]
+
+                        if not possible_edges:
+                            valid_dag_path = False
+                            break
+
+                        scc_connections[i] = possible_edges
+
+                    if not valid_dag_path:
+                        continue
+
+                    # Process SCCs along the DAG path
+                    next_enter_node = None
+                    for i, scc in enumerate(dag_path):
+                        subgraph = dag.nodes[scc]["subgraph"]
+
+                        enter_node = next_enter_node if i > 0 else None
+
+                        # Determine exit nodes that connect current SCC to the next one
+                        if i < len(dag_path) - 1:
+                            valid_edges = [edge for edge in scc_connections[i] if edge[0] not in current_path and edge[1] not in current_path and (subgraph.number_of_nodes() == 1 or enter_node is None or edge[0] not in enter_node)]
+                            if not valid_edges:
+                                valid_edges = [edge for edge in scc_connections[i] if edge[0] in enter_node and edge[1] not in current_path]
+                                if not valid_edges:
+                                    valid_dag_path = False
+                                    break
+                            exit_node = [edge[0] for edge in valid_edges]
+                        else:
+                            exit_node = None
+
+                        # Solve longest path inside current SCC
+                        if subgraph.number_of_nodes() == 1:
+                            scc_path = list(subgraph.nodes())
+                        else:
+                            if enter_node is not None and exit_node is not None:
+                                if enter_node[0] == exit_node[0]:
+                                    scc_path = [enter_node[0]]
+                                else:
+                                    scc_path = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
+                            else:
+                                scc_path = longest_simple_path_binary_search(G=subgraph, start=enter_node, end=exit_node)
+
+                        if not scc_path:
+                            current_path = []
+                            break
+
+                        current_path.extend(scc_path)
+
+                        # Determine entry nodes for next SCC based on the exit node chosen by the sat solver
+                        if i < len(dag_path) - 1:
+                            chosen_exit = scc_path[-1]
+                            corresponding_enter = [edge[1] for edge in valid_edges if edge[0] == chosen_exit]
+
+                            if not corresponding_enter:
+                                current_path = []
+                                break
+
+                            next_enter_node = corresponding_enter
+
+                    if len(current_path) > len(longest_path):
+                        longest_path = current_path
+
+        return longest_path
+    else:
+        block_cut_tree = C.graph["block_cut_tree"]
+        blocks = [n for n, attr in block_cut_tree.nodes(data=True) if attr["type"] == "block"]
+
+        if len(blocks) == 0:
+            return []
+        if len(blocks) == 1:
+            subgraph = block_cut_tree.nodes[blocks[0]]["subgraph"]
+            symmetry = block_cut_tree.nodes[blocks[0]]["symmetry"]
             return longest_simple_path_binary_search(
-                G=block,
-                start=start,
-                end=end,
-                only_in=block.graph.get("only_in_nodes", []),
-                only_out=block.graph.get("only_out_nodes", []),
-                leaves=block.graph.get("leaves", []),
-                symmetry=symmetry if symmetry.get("numorbits") < block.number_of_nodes() else None
+                G=subgraph,
+                symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
             )
 
-    if tree.number_of_nodes() == 1:
-        return best_between(block_id=0)
+        longest_path = []
 
-    longest_path = []
+        # Find the longest path by checking paths between all pairs of blocks
+        for start_block, end_block in combinations(blocks, 2):
+            # The path between two blocks in a tree is unique
+            tree_path = nx.shortest_path(block_cut_tree, start_block, end_block)
 
-    # Only paths inside a block
-    sorted_blocks = sorted(tree.nodes, key=lambda id: len(blocks[id]), reverse=True)
-    for block_id in sorted_blocks:
-        if len(blocks[block_id]) <= len(longest_path):
-            break  # all subsequent blocks are even smaller
-        path = best_between(block_id)
-        if len(path) > len(longest_path):
-            longest_path = path
+            current_path = []
+            for i, tree_node in enumerate(tree_path):
+                if block_cut_tree.nodes[tree_node]["type"] == "block":
+                    subgraph = block_cut_tree.nodes[tree_node]["subgraph"]
+                    symmetry = block_cut_tree.nodes[tree_node]["symmetry"]
 
-    # Try out all paths in bridge_tree
-    leaves = [n for n, d in tree.degree() if d <= 1]
-    for s, t in combinations(leaves, 2):  # all possible start/end blocks
-        path = nx.shortest_path(tree, s, t)
-        path_nodes = []  # nodes of the current path
-        path_splits = []  # paths that had to be split, because they can't forward a simple path (enter_node == exit_node)
+                    # The enter and exit nodes for a block are the adjacent cut nodes in the tree path
+                    enter_node = tree_path[i - 1] if i > 0 else None
+                    exit_node = tree_path[i + 1] if i < len(tree_path) - 1 else None
 
-        # First block
-        first_edge = tree[path[0]][path[1]]
-        first_node = first_edge["attach"][path[0]]
-        path_nodes.extend(best_between(path[0], end=first_node))
+                    if enter_node is not None and exit_node is not None and subgraph.number_of_nodes() > 2:
+                        block_path = longest_simple_path_linear_search_top_down(
+                            G=subgraph,
+                            start=enter_node,
+                            end=exit_node,
+                            symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                        )
+                    else:
+                        block_path = longest_simple_path_binary_search(
+                            G=subgraph,
+                            start=enter_node,
+                            end=exit_node,
+                            symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                        )
 
-        # Middle blocks
-        for i in range(1, len(path) - 1):
-            prev_block = path[i - 1]
-            current_block = path[i]
-            next_block = path[i + 1]
+                    if not current_path:
+                        current_path.extend(block_path)
+                    else:
+                        # Skip the first node to prevent duplicate entries of the cut nodes
+                        current_path.extend(block_path[1:])
 
-            enter_edge = tree[prev_block][current_block]
-            exit_edge = tree[current_block][next_block]
+            if len(current_path) > len(longest_path):
+                longest_path = current_path
 
-            enter_node = enter_edge["attach"][current_block]
-            exit_node = exit_edge["attach"][current_block]
-
-            if blocks[current_block].number_of_nodes() > 1 and enter_node == exit_node:
-                # Split the path if there is an invalid block inbetween
-                path_nodes.extend(best_between(current_block, start=enter_node))
-                path_splits.append(path_nodes)
-                path_nodes = []
-                path_nodes.extend(best_between(current_block, end=enter_node))
-            else:
-                path_nodes.extend(best_between(current_block, enter_node, exit_node))
-
-        # Last block
-        last_edge = tree[path[-2]][path[-1]]
-        last_node = last_edge["attach"][path[-1]]
-        path_nodes.extend(best_between(path[-1], start=last_node))
-
-        if path_splits:
-            path_splits.append(path_nodes)
-            longest_path = max(path_splits, key=len)
-        else:
-            if len(path_nodes) > len(longest_path):
-                longest_path = path_nodes
-
-    return longest_path
+        return longest_path
 
 
 def longest_simple_path(G: nx.Graph):
