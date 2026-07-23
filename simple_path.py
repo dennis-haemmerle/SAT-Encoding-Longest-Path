@@ -478,7 +478,11 @@ def longest_simple_path_components(C: nx.Graph):
             subgraph = dag.nodes[scc]["subgraph"]
             return longest_simple_path_binary_search(subgraph)
 
-        longest_path = []
+        # ==================================================
+        # Brute Force Method
+        # ==================================================
+
+        """ longest_path = []
 
         # Find the longest path by checking paths between all pairs of blocks
         for start_scc, end_scc in combinations(dag.nodes, 2):
@@ -559,7 +563,97 @@ def longest_simple_path_components(C: nx.Graph):
                     if len(current_path) > len(longest_path):
                         longest_path = current_path
 
-        return longest_path
+        return longest_path """
+
+        # ==================================================
+        # Dynamic Programming with topological order
+        # ==================================================
+
+        DP = {}
+
+        # Store all enter nodes for each scc
+        enter_nodes = {scc: set() for scc in dag.nodes()}
+        for u_scc, v_scc in dag.edges():
+            for exit_node, next_enter_node in dag.edges[u_scc, v_scc]["original_edges"]:
+                enter_nodes[v_scc].add(next_enter_node)
+
+        # Process SCCs in reverse topological order
+        # Case: SCC is an intermediate or ending component of the global path
+        for scc in reversed(list(nx.topological_sort(dag))):
+            subgraph = dag.nodes[scc]["subgraph"]
+            symmetry = dag.nodes[scc]["symmetry"]
+            reversed_subgraph = subgraph.reverse()
+            local_paths = {}
+
+            # For each SCC compute the optimal path starting from every possible enter node
+            for enter_node in enter_nodes[scc]:
+
+                if subgraph.number_of_nodes() == 1:
+                    longest_path_from_enter_node = list(subgraph.nodes())
+                else:
+                    longest_path_from_enter_node = longest_simple_path_binary_search(G=subgraph, start=enter_node)
+
+                # Explore transitions to successor SCCs in the DAG
+                for next_scc in dag.successors(scc):
+                    edges_to_next = dag.edges[scc, next_scc]["original_edges"]
+
+                    # Compute optimal path within the current SCC from an enter node to an exit node
+                    for exit_node, next_enter_node in edges_to_next:
+                        if enter_node == exit_node:
+                            scc_path = [enter_node]
+                        else:
+                            if (enter_node, exit_node) not in local_paths:
+                                local_paths[(enter_node, exit_node)] = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
+                            scc_path = local_paths[(enter_node, exit_node)]
+
+                        # Extend path using previously computed DP results continuing from the next SCCs entry node
+                        rest_path = DP.get((next_scc, next_enter_node), [])
+                        total_path = scc_path + rest_path
+
+                        if len(total_path) > len(longest_path_from_enter_node):
+                            longest_path_from_enter_node = total_path
+
+                DP[(scc, enter_node)] = longest_path_from_enter_node
+
+            # Case: SCC is the starting component of the global path
+            longest_path_without_enter_node = []
+            if len(enter_nodes[scc]) < subgraph.number_of_nodes():
+                if subgraph.number_of_nodes() == 1:
+                    longest_path_without_enter_node = list(subgraph.nodes())
+                else:
+                    # Find absolute the longest path within the scc
+                    longest_path_without_enter_node = longest_simple_path_binary_search(G=subgraph)
+                    # paths that start with an enter node are already covered above
+                    if longest_path_without_enter_node[0] in enter_nodes[scc]:
+                        longest_path_without_enter_node = []
+
+                for next_scc in dag.successors(scc):
+                    edges_to_next = dag.edges[scc, next_scc]["original_edges"]
+
+                    # Find the longest path to all exit nodes
+                    for exit_node, next_enter_node in edges_to_next:
+                        if subgraph.number_of_nodes() == 1:
+                            scc_path = list(subgraph.nodes())
+                        else:
+                            if exit_node not in local_paths:
+                                local_paths[exit_node] = list(reversed(longest_simple_path_binary_search(G=reversed_subgraph, start=exit_node)))
+                            scc_path = local_paths[exit_node]
+
+                        if scc_path[0] not in enter_nodes[scc]:
+                            rest_path = DP.get((next_scc, next_enter_node), [])
+                            total_path = scc_path + rest_path
+
+                            if len(total_path) > len(longest_path_without_enter_node):
+                                longest_path_without_enter_node = total_path
+
+                # Update DP table if a valid path starting from a non-enter node was found
+                if longest_path_without_enter_node:
+                    if (scc, longest_path_without_enter_node[0]) not in DP:
+                        DP[(scc, longest_path_without_enter_node[0])] = longest_path_without_enter_node
+                    else:
+                        DP[(scc, longest_path_without_enter_node[0])] = max(DP[(scc, longest_path_without_enter_node[0])], longest_path_without_enter_node, key=len)
+
+        return max(DP.values(), key=len, default=[])
     else:
         block_cut_tree = C.graph["block_cut_tree"]
         blocks = [n for n, attr in block_cut_tree.nodes(data=True) if attr["type"] == "block"]
