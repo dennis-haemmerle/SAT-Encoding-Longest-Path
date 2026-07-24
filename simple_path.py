@@ -7,40 +7,44 @@ from pysat.solvers import Solver
 from optimizations import optimize
 
 
-def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
-    def to_set(val):
-        if val is None:
-            return set()
-        elif isinstance(val, (list, set)):
-            return set(val)
-        else:
-            return {val}
+def to_set(val):
+    if val is None:
+        return set()
+    elif isinstance(val, (list, set)):
+        return set(val)
+    else:
+        return {val}
 
-    only_out = to_set(only_out)
-    only_in = to_set(only_in)
-    leaves = to_set(leaves)
-    start = to_set(start)
-    end = to_set(end)
 
+def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=None):
     if k < 0 or k > G.number_of_edges():
         return None
     if k == 0:
         return [] if G.number_of_nodes() > 0 else None
 
+    start = to_set(start)
+    end = to_set(end)
+
     vpool = IDPool()
     cnf = CNF()
 
     allowed_positions = {}
-    full = frozenset(range(k + 1))
     for v in G.nodes():
-        if (len(start) == 1 and v in start) or v in only_out:
-            allowed_positions[v] = {0}
-        elif (len(end) == 1 and v in end) or v in only_in:
-            allowed_positions[v] = {k}
-        elif v in leaves:
-            allowed_positions[v] = {0, k}
-        else:
-            allowed_positions[v] = full
+        allowed = set(range(k + 1))
+
+        if start:
+            if (len(start) == 1 and v in start):
+                allowed = {0}
+            elif v not in start:
+                allowed -= {0}
+
+        if end:
+            if (len(end) == 1 and v in end):
+                allowed = {k}
+            elif v not in end:
+                allowed -= {k}
+
+        allowed_positions[v] = allowed
 
     allowed_nodes = {i: [] for i in range(k + 1)}
     for v, positions in allowed_positions.items():
@@ -115,11 +119,14 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, only_in=N
         return None
 
 
-def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
+def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=None, symmetry=None):
     if k < 0 or k > G.number_of_edges():
         return None
     if k == 0:
         return [] if G.number_of_nodes() > 0 else None
+
+    start = to_set(start)
+    end = to_set(end)
 
     vpool = IDPool()
     cnf = CNF()
@@ -256,6 +263,29 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
             # (start_var v end_var) -> v
             cnf.append([-start_var, vpool.id(v)])
             cnf.append([-end_var, vpool.id(v)])
+
+        if start:
+            cnf.append([vpool.id(("start", v)) for v in start])
+        if end:
+            cnf.append([vpool.id(("end", v)) for v in end])
+
+        # Symmetry breaking
+        if symmetry is not None:
+            orbit_groups = symmetry.get("orbit_groups", {})
+            for orbit in orbit_groups.values():
+                if len(orbit) <= 1:
+                    continue
+
+                # Only the representative of each orbit is allowed to be the start node.
+                starters = [v for v in orbit if v in start] if start else list(orbit)
+                if not starters:
+                    continue
+
+                representative = min(starters)
+
+                for v in orbit:
+                    if v != representative:
+                        cnf.append([-vpool.id(("start", v))])
     else:
         endpoint_vars = []
 
@@ -288,6 +318,29 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
 
             # end_var -> v
             cnf.append([-end_var, vpool.id(v)])
+
+        if start:
+            cnf.append([vpool.id(("end", v)) for v in start])
+        if end:
+            cnf.append([vpool.id(("end", v)) for v in end])
+
+        # Symmetry breaking
+        if symmetry is not None:
+            orbit_groups = symmetry.get("orbit_groups", {})
+            for orbit in orbit_groups.values():
+                if len(orbit) <= 1:
+                    continue
+
+                # Only the representative of each orbit is allowed to be the start node.
+                starters = [v for v in orbit if v in start] if start else list(orbit)
+                if not starters:
+                    continue
+
+                representative = min(starters)
+
+                for v in orbit:
+                    if v != representative:
+                        cnf.append([-vpool.id(("end", v))])
 
     if G.is_directed():
         cnf.extend(CardEnc.equals(lits=start_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
@@ -425,11 +478,11 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int):
         return None
 
 
-def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
+def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None):
     longest_path = []
 
     for k in range(1, G.number_of_nodes()):
-        path = simple_path_of_length_k(G, k, start, end, only_in, only_out, leaves, symmetry)
+        path = simple_path_of_length_k(G, k, start, end, symmetry)
 
         if path is not None:
             longest_path = path
@@ -439,9 +492,9 @@ def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, only_in
     return longest_path
 
 
-def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
+def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None, symmetry=None):
     for k in range(G.number_of_nodes() - 1, 0, -1):
-        path = simple_path_of_length_k(G, k, start, end, only_in, only_out, leaves, symmetry)
+        path = simple_path_of_length_k(G, k, start, end, symmetry)
 
         if path is not None:
             return path
@@ -449,14 +502,14 @@ def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None
     return []
 
 
-def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, only_in=None, only_out=None, leaves=None, symmetry=None):
+def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetry=None):
     longest_path = []
     low = 0
     high = G.number_of_nodes() - 1
 
     while low <= high:
         mid = (low + high) // 2
-        path = simple_path_of_length_k(G, mid, start, end, only_in, only_out, leaves, symmetry)
+        path = simple_path_of_length_k(G, mid, start, end, symmetry)
 
         if path is not None:
             longest_path = path
