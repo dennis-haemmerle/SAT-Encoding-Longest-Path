@@ -119,7 +119,134 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
         return None
 
 
-def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=None, symmetry=None):
+def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, symmetry=None):
+    if k < 0 or k > G.number_of_edges():
+        return None
+    if k == 0:
+        return [] if G.number_of_nodes() > 0 else None
+
+    start = to_set(start)
+    end = to_set(end)
+
+    vpool = IDPool()
+    cnf = CNF()
+
+    allowed_positions = {}
+    for v in G.nodes():
+        allowed = set(range(k + 1))
+
+        if start:
+            if (len(start) == 1 and v in start):
+                allowed = {0}
+            elif v not in start:
+                allowed -= {0}
+
+        if end:
+            if (len(end) == 1 and v in end):
+                allowed = {k}
+            elif v not in end:
+                allowed -= {k}
+
+        allowed_positions[v] = allowed
+
+    allowed_nodes = {i: [] for i in range(k + 1)}
+    for v, positions in allowed_positions.items():
+        for i in positions:
+            allowed_nodes[i].append(v)
+
+    # 1. Each position is occupied by atmost one node.
+    for i in range(G.number_of_nodes()):
+        lits = [vpool.id((v, i)) for v in G.nodes()]
+        block = CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+        cnf.extend(block.clauses)
+
+    #    The first k positions are occupied by atleast one node.
+    for i in range(k + 1):
+        lits = [vpool.id((v, i)) for v in G.nodes()]
+        block = CardEnc.atleast(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+        cnf.extend(block.clauses)
+
+    # 2. Each node appears at most once.
+    for v in G.nodes():
+        lits = [vpool.id((v, i)) for i in range(G.number_of_nodes())]
+        block = CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+        cnf.extend(block.clauses)
+
+    # 3. For each position i > k: if there is a node, then there has to be a node on position i - 1
+    for i in range(k + 1, G.number_of_nodes()):
+        prev_pos = [vpool.id((v, i - 1)) for v in G.nodes()]
+        for u in G.nodes():
+            clause = [-vpool.id((u, i))] + prev_pos
+            cnf.append(clause)
+
+    """ # 4. Require that consecutive positions are connected by an edge.
+    if G.is_directed():
+        predecessors = {v: list(G.predecessors(v)) for v in G.nodes()}  # type: ignore
+    else:
+        predecessors = {v: list(G.neighbors(v)) for v in G.nodes()}
+
+    for v in G.nodes():
+        for i in range(1, G.number_of_nodes()):
+            clause = [-vpool.id((v, i))] + [vpool.id((u, i - 1)) for u in predecessors[v]]  # type: ignore
+            cnf.append(clause) """
+    # 4. Require that consecutive positions are connected by an edge.
+    for i in range(G.number_of_nodes()):
+        end_id = vpool.id(("end", i)) if i >= k else None
+
+        if i < G.number_of_nodes() - 1:
+            for u in G.nodes():
+                clause = [-vpool.id((u, i))] + [vpool.id((v, i + 1)) for v in G.neighbors(u)] + ([end_id] if i >= k else [])
+                cnf.append(clause)
+        else:
+            if end_id is not None:
+                cnf.append([end_id])
+
+    #   If the path ends at position i, there can be no more nodes at i+1
+    for i in range(k, G.number_of_nodes() - 1):
+        end_id = vpool.id(("end", i))
+        for v in G.nodes():
+            cnf.append([-end_id, -vpool.id((v, i + 1))])
+
+    # Set optional start/end nodes
+    if start:
+        cnf.append([vpool.id((s, 0)) for s in start])
+    if end:
+        # Atleast one endpoint has to be at a valid position i >= k.
+        cnf.append([vpool.id((e, i)) for e in end for i in range(k, G.number_of_nodes())])
+        # If endpoint e is at position i, then there can not be any node at position i + 1.
+        for i in range(k, G.number_of_nodes() - 1):
+            for e in end:
+                for v in G.nodes():
+                    cnf.append([-vpool.id((e, i)), -vpool.id((v, i + 1))])
+
+    # Symmetry breaking
+    if symmetry is not None:
+        orbit_groups = symmetry.get("orbit_groups", {})
+        for orbit in orbit_groups.values():
+            if len(orbit) <= 1:
+                continue
+
+            # Only the representative of each orbit is allowed to be the start node.
+            valid_starters = [v for v in orbit if 0 in allowed_positions[v]]
+            if not valid_starters:
+                continue
+
+            starters = [v for v in valid_starters if v in start]
+            representative = min(starters) if starters else min(valid_starters)
+
+            for v in orbit:
+                if v != representative:
+                    cnf.append([-vpool.id((v, 0))])
+
+    with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
+        if solver.solve():
+            model = set(solver.get_model())  # type: ignore
+            assignment = [v for i in range(k + 1) for v in G.nodes() if vpool.id((v, i)) in model]
+            return assignment
+        return None
+
+
+def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=None, symmetry=None, atleast_k=False):
     if k < 0 or k > G.number_of_edges():
         return None
     if k == 0:
@@ -139,11 +266,17 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
 
     # 1. Exactly k edges
     lits = [edge_var(e) for e in G.edges()]
-    cnf.extend(CardEnc.equals(lits=lits, bound=k, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    if atleast_k:
+        cnf.extend(CardEnc.atleast(lits=lits, bound=k, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    else:
+        cnf.extend(CardEnc.equals(lits=lits, bound=k, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 2. Exactly k+1 nodes
     lits = [vpool.id(v) for v in G.nodes()]
-    cnf.extend(CardEnc.equals(lits=lits, bound=k + 1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    if atleast_k:
+        cnf.extend(CardEnc.atleast(lits=lits, bound=k + 1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    else:
+        cnf.extend(CardEnc.equals(lits=lits, bound=k + 1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 3. Atleast one incident edge for each used node
     for v in G.nodes():
@@ -387,26 +520,26 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
                 # (e_{u,v} ∧ dir_{v,u} ∧ r_{x,v}) -> r_{x,u}
                 cnf.append([-edge_var(e), -dir_vars[(v, u)], -reach[(x, v)], reach[(x, u)]])
 
-        """ # Ensure all active edges have a consistent orientation along the path
-        if not G.is_directed():
-            for e in G.edges():
-                u, v = e
-                for x in G.neighbors(v):
-                    if x == u:
-                        continue
-                    # (e_{u,v} ∧ dir_{u,v} ∧ e_{v,x}) -> dir_{v,x}
-                    cnf.append([-edge_var(e), -dir_vars[(u, v)], -edge_var((v, x)), dir_vars[(v, x)]])
-                    pass
-                for x in G.neighbors(u):
-                    if x == v:
-                        continue
-                    # (e_{u,v} ∧ dir_{v,u} ∧ e_{u,x}) -> dir_{u,x}
-                    cnf.append([-edge_var(e), -dir_vars[(v, u)], -edge_var((u, x)), dir_vars[(u, x)]]) """
-        # Ensure all active edges have a consistent orientation along the path
-        if not G.is_directed():
-            for v in G.nodes():
-                incoming = [dir_vars[(u, v)] for u in G.neighbors(v)]
-                cnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    """ # Ensure all active edges have a consistent orientation along the path
+    if not G.is_directed():
+        for e in G.edges():
+            u, v = e
+            for x in G.neighbors(v):
+                if x == u:
+                    continue
+                # (e_{u,v} ∧ dir_{u,v} ∧ e_{v,x}) -> dir_{v,x}
+                cnf.append([-edge_var(e), -dir_vars[(u, v)], -edge_var((v, x)), dir_vars[(v, x)]])
+                pass
+            for x in G.neighbors(u):
+                if x == v:
+                    continue
+                # (e_{u,v} ∧ dir_{v,u} ∧ e_{u,x}) -> dir_{u,x}
+                cnf.append([-edge_var(e), -dir_vars[(v, u)], -edge_var((u, x)), dir_vars[(u, x)]]) """
+    # Ensure all active edges have a consistent orientation along the path
+    if not G.is_directed():
+        for v in G.nodes():
+            incoming = [dir_vars[(u, v)] for u in G.neighbors(v)]
+            cnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     for v in G.nodes():
         cnf.append([-reach[(v, v)]])
@@ -478,11 +611,14 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
         return None
 
 
-def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None):
+def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None, atleast_k=False):
     longest_path = []
 
     for k in range(1, G.number_of_nodes()):
-        path = simple_path_of_length_k(G, k, start, end, symmetry)
+        if atleast_k:
+            path = simple_path_of_length_atleast_k(G, k, start, end, symmetry)
+        else:
+            path = simple_path_of_length_k(G, k, start, end, symmetry)
 
         if path is not None:
             longest_path = path
@@ -502,14 +638,17 @@ def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None
     return []
 
 
-def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetry=None):
+def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetry=None, atleast_k=False):
     longest_path = []
     low = 0
     high = G.number_of_nodes() - 1
 
     while low <= high:
         mid = (low + high) // 2
-        path = simple_path_of_length_k(G, mid, start, end, symmetry)
+        if atleast_k:
+            path = simple_path_of_length_atleast_k(G, mid, start, end, symmetry)
+        else:
+            path = simple_path_of_length_k(G, mid, start, end, symmetry)
 
         if path is not None:
             longest_path = path
