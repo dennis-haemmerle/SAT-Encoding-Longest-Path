@@ -3,6 +3,7 @@ from itertools import combinations
 from pysat.formula import CNF, IDPool
 from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
+import random
 
 from optimizations import optimize
 
@@ -133,7 +134,7 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
 
     allowed_positions = {}
     for v in G.nodes():
-        allowed = set(range(k + 1))
+        allowed = set(range(G.number_of_nodes()))
 
         if start:
             if (len(start) == 1 and v in start):
@@ -141,15 +142,9 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
             elif v not in start:
                 allowed -= {0}
 
-        if end:
-            if (len(end) == 1 and v in end):
-                allowed = {k}
-            elif v not in end:
-                allowed -= {k}
-
         allowed_positions[v] = allowed
 
-    allowed_nodes = {i: [] for i in range(k + 1)}
+    allowed_nodes = {i: [] for i in range(G.number_of_nodes())}
     for v, positions in allowed_positions.items():
         for i in positions:
             allowed_nodes[i].append(v)
@@ -157,20 +152,17 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
     # 1. Each position is occupied by atmost one node.
     for i in range(G.number_of_nodes()):
         lits = [vpool.id((v, i)) for v in G.nodes()]
-        block = CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-        cnf.extend(block.clauses)
+        cnf.extend(CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     #    The first k positions are occupied by atleast one node.
     for i in range(k + 1):
         lits = [vpool.id((v, i)) for v in G.nodes()]
-        block = CardEnc.atleast(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-        cnf.extend(block.clauses)
+        cnf.extend(CardEnc.atleast(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 2. Each node appears at most once.
     for v in G.nodes():
         lits = [vpool.id((v, i)) for i in range(G.number_of_nodes())]
-        block = CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-        cnf.extend(block.clauses)
+        cnf.extend(CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 3. For each position i > k: if there is a node, then there has to be a node on position i - 1
     for i in range(k + 1, G.number_of_nodes()):
@@ -218,6 +210,103 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
             for e in end:
                 for v in G.nodes():
                     cnf.append([-vpool.id((e, i)), -vpool.id((v, i + 1))])
+
+    # Symmetry breaking
+    if symmetry is not None:
+        orbit_groups = symmetry.get("orbit_groups", {})
+        for orbit in orbit_groups.values():
+            if len(orbit) <= 1:
+                continue
+
+            # Only the representative of each orbit is allowed to be the start node.
+            valid_starters = [v for v in orbit if 0 in allowed_positions[v]]
+            if not valid_starters:
+                continue
+
+            starters = [v for v in valid_starters if v in start]
+            representative = min(starters) if starters else min(valid_starters)
+
+            for v in orbit:
+                if v != representative:
+                    cnf.append([-vpool.id((v, 0))])
+
+    with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
+        if solver.solve():
+            model = set(solver.get_model())  # type: ignore
+            assignment = [v for i in range(k + 1) for v in G.nodes() if vpool.id((v, i)) in model]
+            return assignment
+        return None
+
+
+def simple_path_of_length_atleast_k_2(G: nx.Graph, k: int, start=None, end=None, symmetry=None):
+    if k < 0 or k > G.number_of_edges():
+        return None
+    if k == 0:
+        return [] if G.number_of_nodes() > 0 else None
+
+    start = to_set(start)
+    end = to_set(end)
+
+    vpool = IDPool()
+    cnf = CNF()
+
+    allowed_positions = {}
+    for v in G.nodes():
+        allowed = set(range(G.number_of_nodes()))
+
+        if start:
+            if (len(start) == 1 and v in start):
+                allowed = {0}
+            elif v not in start:
+                allowed -= {0}
+
+        allowed_positions[v] = allowed
+
+    allowed_nodes = {i: [] for i in range(G.number_of_nodes())}
+    for v, positions in allowed_positions.items():
+        for i in positions:
+            allowed_nodes[i].append(v)
+
+    # 0. Atleast k acitve variables
+    for i in range(k + 1):
+        cnf.append([vpool.id(i)])
+
+    #    If position i+1 is active, then position i is also active
+    for i in range(k, G.number_of_nodes() - 1):
+        cnf.append([-vpool.id(i + 1), vpool.id(i)])
+
+    # 1. Each position is occupied by exactly one node.
+    for i in range(G.number_of_nodes()):
+        lits = [vpool.id((v, i)) for v in G.nodes()]
+        for clause in CardEnc.equals(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses:
+            cnf.append([-vpool.id(i)] + clause)
+
+        # If any node is located at position i, position i must be active.
+        for v in G.nodes():
+            cnf.append([-vpool.id((v, i)), vpool.id(i)])
+
+    # 2. Each node appears at most once.
+    for v in G.nodes():
+        lits = [vpool.id((v, i)) for i in range(G.number_of_nodes())]
+        cnf.extend(CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+
+    # 3. Require that consecutive positions are connected by an edge.
+    for u in G.nodes():
+        for i in range(G.number_of_nodes() - 1):
+            clause = [-vpool.id((u, i)), -vpool.id(i + 1)] + [vpool.id((v, i + 1)) for v in G.neighbors(u)]
+            cnf.append(clause)
+
+    # Set optional start/end nodes
+    if start:
+        cnf.append([vpool.id((s, 0)) for s in start])
+    if end:
+        for i in range(k, G.number_of_nodes()):
+            # if position i is active and position i+1 not, then atleast one endpoint has to be at position i
+            clause = [-vpool.id(i)]
+            if i < G.number_of_nodes() - 1:
+                clause.append(vpool.id(i + 1))
+
+            cnf.append(clause + [vpool.id((e, i)) for e in end])
 
     # Symmetry breaking
     if symmetry is not None:
@@ -427,7 +516,6 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
 
             # end_var = True <=> deg(v) = 1
             end_var = vpool.id(("end", v))
-            # endpoint_vars.append(end_var)
             endpoint_vars.append(end_var)
 
             if not incident:
