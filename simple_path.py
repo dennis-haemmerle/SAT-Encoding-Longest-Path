@@ -1,9 +1,9 @@
 import networkx as nx
 from itertools import combinations
-from pysat.formula import CNF, IDPool
+from pysat.formula import CNF, WCNF, IDPool
 from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
-import random
+from pysat.examples.rc2 import RC2
 
 from optimizations import optimize
 
@@ -699,6 +699,270 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
         return None
 
 
+def longest_simple_path_edge_encoding_maxsat(G: nx.Graph):
+    if G.number_of_nodes() <= 0:
+        return []
+
+    vpool = IDPool()
+    wcnf = WCNF()
+
+    def edge_var(e):
+        u, v = e
+        if G.is_directed():
+            return vpool.id((u, v))
+        return vpool.id((min(u, v), max(u, v)))
+
+    # 1. Soft clauses: maximize number of selected edges
+    for e in G.edges():
+        wcnf.append([edge_var(e)], weight=1)
+
+    # 4. Node degree atmost 2
+    if G.is_directed():
+        for v in G.nodes():
+            incoming = [edge_var(e) for e in G.in_edges(v)]  # type: ignore
+            outgoing = [edge_var(e) for e in G.out_edges(v)]  # type: ignore
+
+            if incoming:
+                wcnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+            if outgoing:
+                wcnf.extend(CardEnc.atmost(lits=outgoing, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+    else:
+        for v in G.nodes():
+            incident = [edge_var(e) for e in G.edges(v)]
+            if incident:
+                wcnf.extend(CardEnc.atmost(lits=incident, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
+
+    # 5. Exactly two endpoints with degree 1.
+    if G.is_directed():
+        start_vars = []
+        end_vars = []
+
+        for v in G.nodes():
+            incoming = [edge_var(e) for e in G.in_edges(v)]  # type: ignore
+            outgoing = [edge_var(e) for e in G.out_edges(v)]  # type: ignore
+
+            # start_var = True <=> (indeg(v) = 0 ∧ outdeg(v) = 1)
+            start_var = vpool.id(("start", v))
+            start_vars.append(start_var)
+            # end_var = True <=> (indeg(v) = 1 ∧ outdeg(v) = 0)
+            end_var = vpool.id(("end", v))
+            end_vars.append(end_var)
+
+            # start_var -> outdeg(v) = 1
+            if len(outgoing) == 0:
+                wcnf.append([-start_var])
+            else:
+                exactly_one_out = CardEnc.equals(lits=outgoing, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+                for clause in exactly_one_out.clauses:
+                    wcnf.append([-start_var] + clause)
+
+            # start_var -> indeg(v) = 0
+            for e in incoming:
+                wcnf.append([-start_var, -e])
+
+            # end_var -> indeg(v) = 1
+            if len(incoming) == 0:
+                wcnf.append([-end_var])
+            else:
+                exactly_one_in = CardEnc.equals(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+                for clause in exactly_one_in.clauses:
+                    wcnf.append([-end_var] + clause)
+
+            # end_var -> outdeg(v) = 0
+            for e in outgoing:
+                wcnf.append([-end_var, -e])
+
+            out_deg_1 = vpool.id(("out_deg_1", v))
+            if not outgoing:
+                wcnf.append([-out_deg_1])
+            else:
+                # out_deg_1 -> outdeg(v) = 1
+                exactly_one_out = CardEnc.equals(lits=outgoing, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+                for clause in exactly_one_out.clauses:
+                    wcnf.append([-out_deg_1] + clause)
+
+                # outdeg(v) = 1 -> out_deg_1
+                for i, e in enumerate(outgoing):
+                    # exactly one outgoing -> out_deg_1
+                    wcnf.append([-e] + outgoing[:i] + outgoing[i + 1:] + [out_deg_1])
+
+                for i in range(len(outgoing)):
+                    for j in range(i + 1, len(outgoing)):
+                        # atmost one outgoing -> out_deg_1
+                        wcnf.append([-outgoing[i], -outgoing[j], -out_deg_1])
+
+            # (indeg(v) = 0 ∧ outdeg(v) = 1) -> start_var
+            if incoming:
+                wcnf.append([-out_deg_1] + incoming + [start_var])
+            else:
+                wcnf.append([-out_deg_1, start_var])
+
+            in_deg_1 = vpool.id(("in_deg_1", v))
+            if not incoming:
+                wcnf.append([-in_deg_1])
+            else:
+                # in_deg_1 -> indeg(v) = 1
+                exactly_one_in = CardEnc.equals(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+                for clause in exactly_one_in.clauses:
+                    wcnf.append([-in_deg_1] + clause)
+
+                # indeg(v) = 1 -> in_deg_1
+                for i, e in enumerate(incoming):
+                    # exactly one incoming -> in_deg_1
+                    wcnf.append([-e] + incoming[:i] + incoming[i + 1:] + [in_deg_1])
+
+                for i in range(len(incoming)):
+                    for j in range(i + 1, len(incoming)):
+                        # atmost one incoming -> in_deg_1
+                        wcnf.append([-incoming[i], -incoming[j], -in_deg_1])
+
+            # (indeg(v) = 1 ∧ outdeg(v) = 0) -> end_var
+            if outgoing:
+                wcnf.append([-in_deg_1] + outgoing + [end_var])
+            else:
+                wcnf.append([-in_deg_1, end_var])
+
+            # cnf.append([-start_var, -end_var])
+
+            # (start_var v end_var) -> v
+            # wcnf.append([-start_var, vpool.id(v)])
+            # wcnf.append([-end_var, vpool.id(v)])
+    else:
+        endpoint_vars = []
+
+        for v in G.nodes():
+            incident = [edge_var(e) for e in G.edges(v)]
+
+            # end_var = True <=> deg(v) = 1
+            end_var = vpool.id(("end", v))
+            # endpoint_vars.append(end_var)
+            endpoint_vars.append(end_var)
+
+            if not incident:
+                wcnf.append([-end_var])
+                continue
+
+            # end_var -> deg(v) = 1
+            exactly_one = CardEnc.equals(lits=incident, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+            for clause in exactly_one.clauses:
+                wcnf.append([-end_var] + clause)
+
+            # deg(v) = 1 -> end_var
+            for i, e in enumerate(incident):
+                # atleast one incident -> end_var
+                wcnf.append([-e] + incident[:i] + incident[i + 1:] + [end_var])
+
+            for i in range(len(incident)):
+                for j in range(i + 1, len(incident)):
+                    # atmost one incident -> end_var
+                    wcnf.append([-incident[i], -incident[j], -end_var])
+
+            # end_var -> v
+            # wcnf.append([-end_var, vpool.id(v)])
+
+    if G.is_directed():
+        block = CardEnc.equals(lits=start_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+        wcnf.extend(block.clauses)
+        block = CardEnc.equals(lits=end_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter)
+        wcnf.extend(block.clauses)
+    else:
+        if len(endpoint_vars) >= 2:
+            block = CardEnc.equals(lits=endpoint_vars, bound=2, vpool=vpool, encoding=EncType.seqcounter)
+            wcnf.extend(block.clauses)
+
+    """ # 6. Acyclity via reachability
+    reach = {}
+    for u in G.nodes():
+        for v in G.nodes():
+            # Variables: r_{u,v} (u reaches v)
+            reach[(u, v)] = vpool.id(("reach", (u, v)))
+
+    if not G.is_directed():
+        dir_vars = {}
+        for u, v in G.edges():
+            dir_vars[(u, v)] = vpool.id(("dir", (u, v)))
+            dir_vars[(v, u)] = vpool.id(("dir", (v, u)))
+
+    for e in G.edges():
+        u, v = e
+        if G.is_directed():
+            # e_{u,v} -> r_{u,v}
+            wcnf.append([-edge_var(e), reach[(u, v)]])
+        else:
+            # e_{u,v} -> (dir_{u,v} v dir_{u,v})
+            wcnf.append([-edge_var(e), dir_vars[(u, v)], dir_vars[(v, u)]])
+            # e_{u,v} -> not (dir_{u,v} ∧ dir_{u,v})
+            wcnf.append([-edge_var(e), -dir_vars[(u, v)], -dir_vars[(v, u)]])
+
+            # (e ∧ dir(u,v)) -> reach(u,v)
+            wcnf.append([-edge_var(e), -dir_vars[(u, v)], reach[(u, v)]])
+            # (e ∧ dir(v,u)) -> reach(v,u)
+            wcnf.append([-edge_var(e), -dir_vars[(v, u)], reach[(v, u)]])
+
+        for x in G.nodes():
+            if G.is_directed():
+                # e_{u,v} ∧ r_{x,u} -> r_{x,v}
+                wcnf.append([-edge_var(e), -reach[(x, u)], reach[(x, v)]])
+            else:
+                # (e_{u,v} ∧ dir_{u,v} ∧ r_{x,u}) -> r_{x,v}
+                wcnf.append([-edge_var(e), -dir_vars[(u, v)], -reach[(x, u)], reach[(x, v)]])
+                # (e_{u,v} ∧ dir_{v,u} ∧ r_{x,v}) -> r_{x,u}
+                wcnf.append([-edge_var(e), -dir_vars[(v, u)], -reach[(x, v)], reach[(x, u)]])
+
+        if not G.is_directed():
+            for v in G.nodes():
+                incoming = [dir_vars[(u, v)] for u in G.neighbors(v)]
+                wcnf.extend(CardEnc.atmost(lits=incoming, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+
+    for v in G.nodes():
+        wcnf.append([-reach[(v, v)]]) """
+
+    # 6. Subtour Elimination with DFJ (Lazy Cut Loop)
+    def selected_subgraph(model):
+        H = nx.Graph() if not G.is_directed() else nx.DiGraph()
+
+        for e in G.edges():
+            if edge_var(e) in model:
+                u, v = e
+                H.add_edge(u, v)
+
+        return H
+
+    def add_dfj_cut(model, cycle_nodes):
+        cycle_edges = [-edge_var((u, v)) for u, v in G.subgraph(cycle_nodes).edges() if edge_var((u, v)) in model]
+
+        if cycle_edges:
+            rc2.add_clause(cycle_edges)
+
+    with RC2(wcnf) as rc2:
+        # DFJ Lazy Cut Loop
+        while True:
+            model = rc2.compute()
+            if model is None:
+                return []
+
+            H = selected_subgraph(model)
+
+            comps = list(nx.weakly_connected_components(H) if H.is_directed() else nx.connected_components(H))  # type: ignore
+            cycles = []
+            for comp in comps:
+                used_edges = H.subgraph(comp).number_of_edges()
+                used_nodes = H.subgraph(comp).number_of_nodes()
+                if used_edges > 0 and used_edges >= used_nodes:
+                    cycles.append(comp)
+
+            if not cycles:
+                return list(H.edges())
+
+            for cycle in cycles:
+                add_dfj_cut(model, cycle)
+        """ model = rc2.compute()
+        if model:
+            assignment = [e for e in G.edges() if edge_var(e) in model]
+            return assignment
+        return [] """
+
+
 def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None, atleast_k=False):
     longest_path = []
 
@@ -736,7 +1000,8 @@ def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetr
         if atleast_k:
             path = simple_path_of_length_atleast_k(G, mid, start, end, symmetry)
         else:
-            path = simple_path_of_length_k(G, mid, start, end, symmetry)
+            # path = simple_path_of_length_k(G, mid, start, end, symmetry)
+            path = simple_path_of_length_k_edge_encoding(G, mid, start, end, symmetry)
 
         if path is not None:
             longest_path = path
