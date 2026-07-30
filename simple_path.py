@@ -10,6 +10,58 @@ from optimizations import optimize
 from incremental_simple_path import IncrementalSimplePathEncoder
 
 
+def read_from_file(filename: str):
+    """
+    Reads a graph from a file.
+
+    Supported formats:
+        p graph <num_nodes> <num_edges>
+        p digraph <num_nodes> <num_edges>
+
+        u v
+        ...
+    """
+
+    G = None
+
+    with open(filename, "r") as f:
+        for line in f:
+            line = line.strip()
+
+            if not line or line.startswith("c"):
+                continue
+
+            if line.startswith("p"):
+                parts = line.split()
+
+                if len(parts) != 4:
+                    raise ValueError(f"Invalid header: {line}")
+
+                _, graph_type, num_nodes, _ = parts
+                num_nodes = int(num_nodes)
+
+                if graph_type == "graph":
+                    G = nx.Graph()
+                elif graph_type == "digraph":
+                    G = nx.DiGraph()
+                else:
+                    raise ValueError(f"Unknown graph type '{graph_type}'.")
+
+                G.add_nodes_from(range(1, num_nodes + 1))
+                continue
+
+            if G is None:
+                raise ValueError("Header must appear before any edge definitions.")
+
+            u, v = map(int, line.split())
+            G.add_edge(u, v)
+
+    if G is None:
+        raise ValueError("No header found.")
+
+    return G
+
+
 def to_set(val: list[int] | set[int] | int | None) -> set[int]:
     if val is None:
         return set()
