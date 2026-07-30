@@ -1,14 +1,16 @@
 import networkx as nx
 from itertools import combinations
+from collections import defaultdict
 from pysat.formula import CNF, WCNF, IDPool
 from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
 from pysat.examples.rc2 import RC2
 
 from optimizations import optimize
+from incremental_simple_path import IncrementalSimplePathEncoder
 
 
-def to_set(val):
+def to_set(val: list[int] | set[int] | int | None) -> set[int]:
     if val is None:
         return set()
     elif isinstance(val, (list, set)):
@@ -694,8 +696,8 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
         return None """
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
-            assignment = [v for v in G.nodes() if vpool.id(v) in model]
-            return assignment
+            assignment = [e for e in G.edges() if edge_var(e) in model]
+            return extract_path(assignment, G.is_directed())
         return None
 
 
@@ -952,25 +954,82 @@ def longest_simple_path_edge_encoding_maxsat(G: nx.Graph):
                     cycles.append(comp)
 
             if not cycles:
-                return list(H.edges())
+                # return list(H.edges())
+                return extract_path(list(H.edges()), G.is_directed())
 
             for cycle in cycles:
                 add_dfj_cut(model, cycle)
         """ model = rc2.compute()
         if model:
             assignment = [e for e in G.edges() if edge_var(e) in model]
-            return assignment
+            return extract_path(assignment, G.is_directed())
         return [] """
 
 
-def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None, atleast_k=False):
+def extract_path(edges: list[tuple], is_directed: bool) -> list:
+    adj = defaultdict(list)
+    in_degree = defaultdict(int)
+    out_degree = defaultdict(int)
+    total_degree = defaultdict(int)
+
+    for u, v in edges:
+        adj[u].append(v)
+        out_degree[u] += 1
+        in_degree[v] += 1
+        total_degree[u] += 1
+        total_degree[v] += 1
+
+        if not is_directed:
+            adj[v].append(u)
+
+    if is_directed:
+        for node in total_degree:
+            if out_degree[node] - in_degree[node] == 1:
+                start_node = node
+                break
+    else:
+        for node, degree in total_degree.items():
+            if degree == 1:
+                start_node = node
+                break
+
+    path = [start_node]
+    current = start_node
+    visited_edges = set()
+
+    for _ in range(len(edges)):
+        next_node = None
+        for next in adj[current]:
+            edge_id = (current, next) if is_directed else tuple(sorted((current, next)))
+
+            if edge_id not in visited_edges:
+                visited_edges.add(edge_id)
+                next_node = next
+                break
+
+        if next_node is None:
+            break
+
+        path.append(next_node)
+        current = next_node
+
+    return path
+
+
+def longest_simple_path_linear_search(G: nx.Graph, start=None, end=None, symmetry=None, edge_encoding=False, atleast_k=False, atleast_k_variant=False):
     longest_path = []
 
     for k in range(1, G.number_of_nodes()):
-        if atleast_k:
-            path = simple_path_of_length_atleast_k(G, k, start, end, symmetry)
+        if edge_encoding:
+            path = simple_path_of_length_k_edge_encoding(G, k, start, end, symmetry, atleast_k)
         else:
-            path = simple_path_of_length_k(G, k, start, end, symmetry)
+            if atleast_k:
+                if atleast_k_variant:
+                    path = simple_path_of_length_atleast_k_2(G, k, start, end, symmetry)
+                else:
+                    path = simple_path_of_length_atleast_k(G, k, start, end, symmetry)
+            else:
+                path = simple_path_of_length_k(G, k, start, end, symmetry)
 
         if path is not None:
             longest_path = path
@@ -990,18 +1049,23 @@ def longest_simple_path_linear_search_top_down(G: nx.Graph, start=None, end=None
     return []
 
 
-def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetry=None, atleast_k=False):
+def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetry=None, edge_encoding=False, atleast_k=False, atleast_k_variant=False):
     longest_path = []
     low = 0
     high = G.number_of_nodes() - 1
 
     while low <= high:
         mid = (low + high) // 2
-        if atleast_k:
-            path = simple_path_of_length_atleast_k(G, mid, start, end, symmetry)
+        if edge_encoding:
+            path = simple_path_of_length_k_edge_encoding(G, mid, start, end, symmetry, atleast_k)
         else:
-            # path = simple_path_of_length_k(G, mid, start, end, symmetry)
-            path = simple_path_of_length_k_edge_encoding(G, mid, start, end, symmetry)
+            if atleast_k:
+                if atleast_k_variant:
+                    path = simple_path_of_length_atleast_k_2(G, mid, start, end, symmetry)
+                else:
+                    path = simple_path_of_length_atleast_k(G, mid, start, end, symmetry)
+            else:
+                path = simple_path_of_length_k(G, mid, start, end, symmetry)
 
         if path is not None:
             longest_path = path
@@ -1012,7 +1076,144 @@ def longest_simple_path_binary_search(G: nx.Graph, start=None, end=None, symmetr
     return longest_path
 
 
-def longest_simple_path_components(C: nx.Graph):
+def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int = 0):
+    def longest_simple_path(subgraph: nx.Graph, reversed_subgraph: nx.Graph, enter_node=None, exit_node=None, symmetry=dict(), encoding: int = 0):
+        """
+        encoding [default: 0]:
+            0 = position encoding (exactly k) - linear search (top-down)
+            1 = position encoding (atleast k) variant 1 - linear search (bottom-up)
+            2 = position encoding (atleast k) variant 2 - linear search (bottom-up)
+            3 = position encoding (atleast k) variant 1 - binary search
+            4 = position encoding (atleast k) variant 2 - binary search
+            5 = edge encoding (atleast k) - linear search (bottom-up)
+            6 = edge encoding (atleast k) - binary search
+            7 = incremental position encoding
+        """
+        match encoding:
+            case 1:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    return list(reversed(longest_simple_path_linear_search(
+                        G=reversed_subgraph,
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=False
+                    )))
+                return longest_simple_path_linear_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=False,
+                    atleast_k=True,
+                    atleast_k_variant=False
+                )
+            case 2:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    return list(reversed(longest_simple_path_linear_search(
+                        G=reversed_subgraph,
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=True
+                    )))
+                return longest_simple_path_linear_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=False,
+                    atleast_k=True,
+                    atleast_k_variant=True
+                )
+            case 3:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    return list(reversed(longest_simple_path_binary_search(
+                        G=reversed_subgraph,
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=False
+                    )))
+                return longest_simple_path_binary_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=False,
+                    atleast_k=True,
+                    atleast_k_variant=False
+                )
+            case 4:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    return list(reversed(longest_simple_path_binary_search(
+                        G=reversed_subgraph,
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=True
+                    )))
+                return longest_simple_path_binary_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=False,
+                    atleast_k=True,
+                    atleast_k_variant=True
+                )
+            case 5:
+                return longest_simple_path_linear_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=True,
+                    atleast_k=True
+                )
+            case 6:
+                return longest_simple_path_binary_search(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    edge_encoding=True,
+                    atleast_k=True,
+                )
+            case 7:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    encoder = IncrementalSimplePathEncoder(reversed_subgraph)
+                    path = list(reversed(encoder.longest_simple_path(
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                    )))
+                else:
+                    encoder = IncrementalSimplePathEncoder(subgraph)
+                    path = encoder.longest_simple_path(
+                        start=enter_node,
+                        end=exit_node,
+                        # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                    )
+                encoder.delete()
+                return path
+            case _:
+                if subgraph.is_directed() and not enter_node and exit_node:
+                    return list(reversed(longest_simple_path_linear_search_top_down(
+                        G=reversed_subgraph,
+                        start=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                    )))
+                return longest_simple_path_linear_search_top_down(
+                    G=subgraph,
+                    start=enter_node,
+                    end=exit_node,
+                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                )
+
     if C.is_directed():
         dag = C.graph["condensation_dag"]
 
@@ -1023,182 +1224,229 @@ def longest_simple_path_components(C: nx.Graph):
             subgraph = dag.nodes[scc]["subgraph"]
             return longest_simple_path_binary_search(subgraph)
 
-        # ==================================================
-        # Brute Force Method
-        # ==================================================
+        if not dp:
+            # ==================================================
+            # Brute Force Method
+            # ==================================================
 
-        """ longest_path = []
+            longest_path = []
 
-        # Find the longest path by checking paths between all pairs of blocks
-        for start_scc, end_scc in combinations(dag.nodes, 2):
-            # Check both directions for a path in topological order
-            for src, dst in [(start_scc, end_scc), (end_scc, start_scc)]:
-                if not nx.has_path(dag, src, dst):
-                    continue
-
-                # Try all simple paths in the condensations DAG
-                for dag_path in nx.all_simple_paths(dag, src, dst):
-                    current_path = []
-                    valid_dag_path = True
-                    scc_connections = {}
-
-                    # Collect possible connecting edges between consecutive SCCs
-                    for i in range(len(dag_path) - 1):
-                        u_scc = dag_path[i]
-                        v_scc = dag_path[i + 1]
-                        possible_edges = dag.edges[u_scc, v_scc]["original_edges"]
-
-                        if not possible_edges:
-                            valid_dag_path = False
-                            break
-
-                        scc_connections[i] = possible_edges
-
-                    if not valid_dag_path:
+            # Find the longest path by checking paths between all pairs of blocks
+            for start_scc, end_scc in combinations(dag.nodes, 2):
+                # Check both directions for a path in topological order
+                for src, dst in [(start_scc, end_scc), (end_scc, start_scc)]:
+                    if not nx.has_path(dag, src, dst):
                         continue
 
-                    # Process SCCs along the DAG path
-                    next_enter_node = None
-                    for i, scc in enumerate(dag_path):
-                        subgraph = dag.nodes[scc]["subgraph"]
+                    # Try all simple paths in the condensations DAG
+                    for dag_path in nx.all_simple_paths(dag, src, dst):
+                        current_path = []
+                        valid_dag_path = True
+                        scc_connections = {}
 
-                        enter_node = next_enter_node if i > 0 else None
+                        # Collect possible connecting edges between consecutive SCCs
+                        for i in range(len(dag_path) - 1):
+                            u_scc = dag_path[i]
+                            v_scc = dag_path[i + 1]
+                            possible_edges = dag.edges[u_scc, v_scc]["original_edges"]
 
-                        # Determine exit nodes that connect current SCC to the next one
-                        if i < len(dag_path) - 1:
-                            valid_edges = [edge for edge in scc_connections[i] if edge[0] not in current_path and edge[1] not in current_path and (subgraph.number_of_nodes() == 1 or enter_node is None or edge[0] not in enter_node)]
-                            if not valid_edges:
-                                valid_edges = [edge for edge in scc_connections[i] if edge[0] in enter_node and edge[1] not in current_path]
+                            if not possible_edges:
+                                valid_dag_path = False
+                                break
+
+                            scc_connections[i] = possible_edges
+
+                        if not valid_dag_path:
+                            continue
+
+                        # Process SCCs along the DAG path
+                        next_enter_node = None
+                        for i, scc in enumerate(dag_path):
+                            subgraph = dag.nodes[scc]["subgraph"]
+                            symmetry = dag.nodes[scc]["symmetry"]
+                            reversed_subgraph = subgraph.reverse()
+
+                            enter_node = next_enter_node if i > 0 else None
+
+                            # Determine exit nodes that connect current SCC to the next one
+                            if i < len(dag_path) - 1:
+                                valid_edges = [edge for edge in scc_connections[i] if edge[0] not in current_path and edge[1] not in current_path and (subgraph.number_of_nodes() == 1 or enter_node is None or edge[0] not in enter_node)]
                                 if not valid_edges:
-                                    valid_dag_path = False
-                                    break
-                            exit_node = [edge[0] for edge in valid_edges]
-                        else:
-                            exit_node = None
-
-                        # Solve longest path inside current SCC
-                        if subgraph.number_of_nodes() == 1:
-                            scc_path = list(subgraph.nodes())
-                        else:
-                            if enter_node is not None and exit_node is not None:
-                                if enter_node[0] == exit_node[0]:
-                                    scc_path = [enter_node[0]]
-                                else:
-                                    scc_path = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
+                                    valid_edges = [edge for edge in scc_connections[i] if edge[0] in enter_node and edge[1] not in current_path]
+                                    if not valid_edges:
+                                        valid_dag_path = False
+                                        break
+                                exit_node = [edge[0] for edge in valid_edges]
                             else:
-                                scc_path = longest_simple_path_binary_search(G=subgraph, start=enter_node, end=exit_node)
+                                exit_node = None
 
-                        if not scc_path:
-                            current_path = []
-                            break
+                            # Solve longest path inside current SCC
+                            if subgraph.number_of_nodes() == 1:
+                                scc_path = list(subgraph.nodes())
+                            else:
+                                if enter_node is not None and exit_node is not None:
+                                    if enter_node[0] == exit_node[0]:
+                                        scc_path = [enter_node[0]]
+                                    else:
+                                        # scc_path = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
+                                        scc_path = longest_simple_path(
+                                            subgraph=subgraph,
+                                            reversed_subgraph=reversed_subgraph,
+                                            enter_node=enter_node,
+                                            exit_node=exit_node,
+                                            symmetry=symmetry,
+                                            encoding=encoding
+                                        )
+                                else:
+                                    # scc_path = longest_simple_path_binary_search(G=subgraph, start=enter_node, end=exit_node)
+                                    scc_path = longest_simple_path(
+                                        subgraph=subgraph,
+                                        reversed_subgraph=reversed_subgraph,
+                                        enter_node=enter_node,
+                                        exit_node=exit_node,
+                                        symmetry=symmetry,
+                                        encoding=encoding
+                                    )
 
-                        current_path.extend(scc_path)
-
-                        # Determine entry nodes for next SCC based on the exit node chosen by the sat solver
-                        if i < len(dag_path) - 1:
-                            chosen_exit = scc_path[-1]
-                            corresponding_enter = [edge[1] for edge in valid_edges if edge[0] == chosen_exit]
-
-                            if not corresponding_enter:
+                            if not scc_path:
                                 current_path = []
                                 break
 
-                            next_enter_node = corresponding_enter
+                            current_path.extend(scc_path)
 
-                    if len(current_path) > len(longest_path):
-                        longest_path = current_path
+                            # Determine entry nodes for next SCC based on the exit node chosen by the sat solver
+                            if i < len(dag_path) - 1:
+                                chosen_exit = scc_path[-1]
+                                corresponding_enter = [edge[1] for edge in valid_edges if edge[0] == chosen_exit]
 
-        return longest_path """
+                                if not corresponding_enter:
+                                    current_path = []
+                                    break
 
-        # ==================================================
-        # Dynamic Programming with topological order
-        # ==================================================
+                                next_enter_node = corresponding_enter
 
-        DP = {}
+                        if len(current_path) > len(longest_path):
+                            longest_path = current_path
 
-        # Store all enter nodes for each scc
-        enter_nodes = {scc: set() for scc in dag.nodes()}
-        for u_scc, v_scc in dag.edges():
-            for exit_node, next_enter_node in dag.edges[u_scc, v_scc]["original_edges"]:
-                enter_nodes[v_scc].add(next_enter_node)
+            return longest_path
+        else:
+            # ==================================================
+            # Dynamic Programming with topological order
+            # ==================================================
 
-        # Process SCCs in reverse topological order
-        # Case: SCC is an intermediate or ending component of the global path
-        for scc in reversed(list(nx.topological_sort(dag))):
-            subgraph = dag.nodes[scc]["subgraph"]
-            symmetry = dag.nodes[scc]["symmetry"]
-            reversed_subgraph = subgraph.reverse()
-            local_paths = {}
+            DP = {}
 
-            # For each SCC compute the optimal path starting from every possible enter node
-            for enter_node in enter_nodes[scc]:
+            # Store all enter nodes for each scc
+            enter_nodes = {scc: set() for scc in dag.nodes()}
+            for u_scc, v_scc in dag.edges():
+                for exit_node, next_enter_node in dag.edges[u_scc, v_scc]["original_edges"]:
+                    enter_nodes[v_scc].add(next_enter_node)
 
-                if subgraph.number_of_nodes() == 1:
-                    longest_path_from_enter_node = list(subgraph.nodes())
-                else:
-                    longest_path_from_enter_node = longest_simple_path_binary_search(G=subgraph, start=enter_node)
+            # Process SCCs in reverse topological order
+            # Case: SCC is an intermediate or ending component of the global path
+            for scc in reversed(list(nx.topological_sort(dag))):
+                subgraph = dag.nodes[scc]["subgraph"]
+                symmetry = dag.nodes[scc]["symmetry"]
+                reversed_subgraph = subgraph.reverse()
+                local_paths = {}
 
-                # Explore transitions to successor SCCs in the DAG
-                for next_scc in dag.successors(scc):
-                    edges_to_next = dag.edges[scc, next_scc]["original_edges"]
+                # For each SCC compute the optimal path starting from every possible enter node
+                for enter_node in enter_nodes[scc]:
 
-                    # Compute optimal path within the current SCC from an enter node to an exit node
-                    for exit_node, next_enter_node in edges_to_next:
-                        if enter_node == exit_node:
-                            scc_path = [enter_node]
-                        else:
-                            if (enter_node, exit_node) not in local_paths:
-                                local_paths[(enter_node, exit_node)] = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
-                            scc_path = local_paths[(enter_node, exit_node)]
+                    if subgraph.number_of_nodes() == 1:
+                        longest_path_from_enter_node = list(subgraph.nodes())
+                    else:
+                        # longest_path_from_enter_node = longest_simple_path_binary_search(G=subgraph, start=enter_node)
+                        longest_path_from_enter_node = longest_simple_path(
+                            subgraph=subgraph,
+                            reversed_subgraph=reversed_subgraph,
+                            enter_node=enter_node,
+                            symmetry=symmetry,
+                            encoding=encoding
+                        )
 
-                        # Extend path using previously computed DP results continuing from the next SCCs entry node
-                        rest_path = DP.get((next_scc, next_enter_node), [])
-                        total_path = scc_path + rest_path
+                    # Explore transitions to successor SCCs in the DAG
+                    for next_scc in dag.successors(scc):
+                        edges_to_next = dag.edges[scc, next_scc]["original_edges"]
 
-                        if len(total_path) > len(longest_path_from_enter_node):
-                            longest_path_from_enter_node = total_path
+                        # Compute optimal path within the current SCC from an enter node to an exit node
+                        for exit_node, next_enter_node in edges_to_next:
+                            if enter_node == exit_node:
+                                scc_path = [enter_node]
+                            else:
+                                if (enter_node, exit_node) not in local_paths:
+                                    # local_paths[(enter_node, exit_node)] = longest_simple_path_linear_search_top_down(G=subgraph, start=enter_node, end=exit_node)
+                                    local_paths[(enter_node, exit_node)] = longest_simple_path(
+                                        subgraph=subgraph,
+                                        reversed_subgraph=reversed_subgraph,
+                                        enter_node=enter_node,
+                                        exit_node=exit_node,
+                                        symmetry=symmetry,
+                                        encoding=encoding
+                                    )
+                                scc_path = local_paths[(enter_node, exit_node)]
 
-                DP[(scc, enter_node)] = longest_path_from_enter_node
-
-            # Case: SCC is the starting component of the global path
-            longest_path_without_enter_node = []
-            if len(enter_nodes[scc]) < subgraph.number_of_nodes():
-                if subgraph.number_of_nodes() == 1:
-                    longest_path_without_enter_node = list(subgraph.nodes())
-                else:
-                    # Find absolute the longest path within the scc
-                    longest_path_without_enter_node = longest_simple_path_binary_search(G=subgraph)
-                    # paths that start with an enter node are already covered above
-                    if longest_path_without_enter_node[0] in enter_nodes[scc]:
-                        longest_path_without_enter_node = []
-
-                for next_scc in dag.successors(scc):
-                    edges_to_next = dag.edges[scc, next_scc]["original_edges"]
-
-                    # Find the longest path to all exit nodes
-                    for exit_node, next_enter_node in edges_to_next:
-                        if subgraph.number_of_nodes() == 1:
-                            scc_path = list(subgraph.nodes())
-                        else:
-                            if exit_node not in local_paths:
-                                local_paths[exit_node] = list(reversed(longest_simple_path_binary_search(G=reversed_subgraph, start=exit_node)))
-                            scc_path = local_paths[exit_node]
-
-                        if scc_path[0] not in enter_nodes[scc]:
+                            # Extend path using previously computed DP results continuing from the next SCCs entry node
                             rest_path = DP.get((next_scc, next_enter_node), [])
                             total_path = scc_path + rest_path
 
-                            if len(total_path) > len(longest_path_without_enter_node):
-                                longest_path_without_enter_node = total_path
+                            if len(total_path) > len(longest_path_from_enter_node):
+                                longest_path_from_enter_node = total_path
 
-                # Update DP table if a valid path starting from a non-enter node was found
-                if longest_path_without_enter_node:
-                    if (scc, longest_path_without_enter_node[0]) not in DP:
-                        DP[(scc, longest_path_without_enter_node[0])] = longest_path_without_enter_node
+                    DP[(scc, enter_node)] = longest_path_from_enter_node
+
+                # Case: SCC is the starting component of the global path
+                longest_path_without_enter_node = []
+                if len(enter_nodes[scc]) < subgraph.number_of_nodes():
+                    if subgraph.number_of_nodes() == 1:
+                        longest_path_without_enter_node = list(subgraph.nodes())
                     else:
-                        DP[(scc, longest_path_without_enter_node[0])] = max(DP[(scc, longest_path_without_enter_node[0])], longest_path_without_enter_node, key=len)
+                        # Find absolute the longest path within the scc
+                        # longest_path_without_enter_node = longest_simple_path_binary_search(G=subgraph)
+                        longest_path_without_enter_node = longest_simple_path(
+                            subgraph=subgraph,
+                            reversed_subgraph=reversed_subgraph,
+                            symmetry=symmetry,
+                            encoding=encoding
+                        )
+                        # paths that start with an enter node are already covered above
+                        if longest_path_without_enter_node[0] in enter_nodes[scc]:
+                            longest_path_without_enter_node = []
 
-        return max(DP.values(), key=len, default=[])
+                    for next_scc in dag.successors(scc):
+                        edges_to_next = dag.edges[scc, next_scc]["original_edges"]
+
+                        # Find the longest path to all exit nodes
+                        for exit_node, next_enter_node in edges_to_next:
+                            if subgraph.number_of_nodes() == 1:
+                                scc_path = list(subgraph.nodes())
+                            else:
+                                if exit_node not in local_paths:
+                                    local_paths[exit_node] = list(reversed(longest_simple_path_binary_search(G=reversed_subgraph, start=exit_node)))
+                                    local_paths[exit_node] = longest_simple_path(
+                                        subgraph=subgraph,
+                                        reversed_subgraph=reversed_subgraph,
+                                        exit_node=exit_node,
+                                        symmetry=symmetry,
+                                        encoding=encoding
+                                    )
+                                scc_path = local_paths[exit_node]
+
+                            if scc_path[0] not in enter_nodes[scc]:
+                                rest_path = DP.get((next_scc, next_enter_node), [])
+                                total_path = scc_path + rest_path
+
+                                if len(total_path) > len(longest_path_without_enter_node):
+                                    longest_path_without_enter_node = total_path
+
+                    # Update DP table if a valid path starting from a non-enter node was found
+                    if longest_path_without_enter_node:
+                        if (scc, longest_path_without_enter_node[0]) not in DP:
+                            DP[(scc, longest_path_without_enter_node[0])] = longest_path_without_enter_node
+                        else:
+                            DP[(scc, longest_path_without_enter_node[0])] = max(DP[(scc, longest_path_without_enter_node[0])], longest_path_without_enter_node, key=len)
+
+            return max(DP.values(), key=len, default=[])
     else:
         block_cut_tree = C.graph["block_cut_tree"]
         blocks = [n for n, attr in block_cut_tree.nodes(data=True) if attr["type"] == "block"]
@@ -1208,9 +1456,15 @@ def longest_simple_path_components(C: nx.Graph):
         if len(blocks) == 1:
             subgraph = block_cut_tree.nodes[blocks[0]]["subgraph"]
             symmetry = block_cut_tree.nodes[blocks[0]]["symmetry"]
-            return longest_simple_path_binary_search(
+            """ return longest_simple_path_binary_search(
                 G=subgraph,
-                symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+            ) """
+            return longest_simple_path(
+                subgraph=subgraph,
+                reversed_subgraph=subgraph,
+                symmetry=symmetry,
+                encoding=encoding
             )
 
         longest_path = []
@@ -1231,19 +1485,41 @@ def longest_simple_path_components(C: nx.Graph):
                     exit_node = tree_path[i + 1] if i < len(tree_path) - 1 else None
 
                     if enter_node is not None and exit_node is not None and subgraph.number_of_nodes() > 2:
-                        block_path = longest_simple_path_linear_search_top_down(
+                        """ block_path = longest_simple_path_linear_search_top_down(
                             G=subgraph,
                             start=enter_node,
                             end=exit_node,
-                            symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                            # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                        ) """
+                        block_path = longest_simple_path(
+                            subgraph=subgraph,
+                            reversed_subgraph=subgraph,
+                            enter_node=enter_node,
+                            exit_node=exit_node,
+                            symmetry=symmetry,
+                            encoding=encoding
                         )
+                        """ if block_path[0] == exit_node:
+                            block_path = list(reversed(block_path)) """
                     else:
-                        block_path = longest_simple_path_binary_search(
+                        """ block_path = longest_simple_path_binary_search(
                             G=subgraph,
                             start=enter_node,
                             end=exit_node,
-                            symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                            # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        ) """
+                        block_path = longest_simple_path(
+                            subgraph=subgraph,
+                            reversed_subgraph=subgraph,
+                            enter_node=enter_node,
+                            exit_node=exit_node,
+                            symmetry=symmetry,
+                            encoding=encoding
                         )
+                        """ if enter_node is not None and block_path[-1] == enter_node:
+                            block_path = list(reversed(block_path))
+                        if exit_node is not None and block_path[0] == exit_node:
+                            block_path = list(reversed(block_path)) """
 
                     if not current_path:
                         current_path.extend(block_path)
@@ -1257,12 +1533,23 @@ def longest_simple_path_components(C: nx.Graph):
         return longest_path
 
 
-def longest_simple_path(G: nx.Graph):
+def longest_simple_path(G: nx.Graph, dp: bool = True, encoding: int = 0):
+    """
+    encoding [default: 0]:
+        0 = position encoding (exactly k) - linear search (top-down)
+        1 = position encoding (atleast k) variant 1 - linear search (bottom-up)
+        2 = position encoding (atleast k) variant 2 - linear search (bottom-up)
+        3 = position encoding (atleast k) variant 1 - binary search
+        4 = position encoding (atleast k) variant 2 - binary search
+        5 = edge encoding (atleast k) - linear search (bottom-up)
+        6 = edge encoding (atleast k) - binary search
+        7 = incremental position encoding
+    """
     H = optimize(G)
     longest_path = []
 
     for C in H.graph.get("connected_components", [H]):
-        path = longest_simple_path_components(C)
+        path = longest_simple_path_components(C, dp, encoding)
         if len(path) > len(longest_path):
             longest_path = path
 
