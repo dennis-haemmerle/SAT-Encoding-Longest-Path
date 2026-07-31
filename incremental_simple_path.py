@@ -1,6 +1,6 @@
 import networkx as nx
 from pysat.formula import IDPool
-from pysat.card import CardEnc, EncType, ITotalizer
+from pysat.card import CardEnc, EncType
 from pysat.solvers import Solver
 
 
@@ -60,7 +60,7 @@ class IncrementalSimplePathEncoder:
             self.solver.add_clause([self.vpool.id((v, 0)) for v in self.start])
 
         # Symmetry breaking
-        if symmetry is not None:
+        if symmetry is not None and self.G.is_directed():
             orbit_groups = symmetry.get("orbit_groups", {})
             for orbit in orbit_groups.values():
                 if len(orbit) <= 1:

@@ -27,6 +27,11 @@ Binary Search: longest_simple_path_binary_search(G: nx.Graph, edge_encoding=Fals
 - atleast_k [standard: False]: True -> atleast k / False -> exactly k
 - atleast_k_variant [standard: False] (only relevant if not edge_encoding and atleast_k): True -> variant 2 / False -> variant 1
 
+Incremental position encoding:
+encoder = IncrementalSimplePathEncoder(G)
+path = encoder.longest_simple_path()
+encoder.delete()
+
 Edge encoding (MaxSAT): longest_simple_path_edge_encoding_maxsat(G: nx.Graph)
 
 Optimized (preprocessed): longest_simple_path(G: nx.Graph, dp: bool = True, encoding: int = 0)

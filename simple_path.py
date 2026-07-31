@@ -148,7 +148,7 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
         cnf.append([vpool.id((v, k)) for v in end])
 
     # Symmetry breaking
-    if symmetry is not None:
+    if symmetry is not None and G.is_directed():
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
             if len(orbit) <= 1:
@@ -266,7 +266,7 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
                     cnf.append([-vpool.id((e, i)), -vpool.id((v, i + 1))])
 
     # Symmetry breaking
-    if symmetry is not None:
+    if symmetry is not None and G.is_directed():
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
             if len(orbit) <= 1:
@@ -363,7 +363,7 @@ def simple_path_of_length_atleast_k_2(G: nx.Graph, k: int, start=None, end=None,
             cnf.append(clause + [vpool.id((e, i)) for e in end])
 
     # Symmetry breaking
-    if symmetry is not None:
+    if symmetry is not None and G.is_directed():
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
             if len(orbit) <= 1:
@@ -600,7 +600,7 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
             cnf.append([vpool.id(("end", v)) for v in end])
 
         # Symmetry breaking
-        if symmetry is not None:
+        if symmetry is not None and G.is_directed():
             orbit_groups = symmetry.get("orbit_groups", {})
             for orbit in orbit_groups.values():
                 if len(orbit) <= 1:
@@ -1132,7 +1132,7 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
     def longest_simple_path(subgraph: nx.Graph, reversed_subgraph: nx.Graph, enter_node=None, exit_node=None, symmetry=dict(), encoding: int = 0):
         """
         encoding [default: 0]:
-            0 = position encoding (exactly k) - linear search (top-down)
+            0 = position encoding (exactly k) - binary search and linear search (top-down)
             1 = position encoding (atleast k) variant 1 - linear search (bottom-up)
             2 = position encoding (atleast k) variant 2 - linear search (bottom-up)
             3 = position encoding (atleast k) variant 1 - binary search
@@ -1152,14 +1152,21 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                         atleast_k=True,
                         atleast_k_variant=False
                     )))
+                if enter_node and exit_node:
+                    return longest_simple_path_linear_search(
+                        G=subgraph,
+                        start=enter_node,
+                        end=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=False
+                    )
                 return longest_simple_path_linear_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
-                    edge_encoding=False,
-                    atleast_k=True,
-                    atleast_k_variant=False
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                 )
             case 2:
                 if subgraph.is_directed() and not enter_node and exit_node:
@@ -1171,14 +1178,21 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                         atleast_k=True,
                         atleast_k_variant=True
                     )))
+                if enter_node and exit_node:
+                    return longest_simple_path_linear_search(
+                        G=subgraph,
+                        start=enter_node,
+                        end=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=True
+                    )
                 return longest_simple_path_linear_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
-                    edge_encoding=False,
-                    atleast_k=True,
-                    atleast_k_variant=True
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                 )
             case 3:
                 if subgraph.is_directed() and not enter_node and exit_node:
@@ -1190,14 +1204,21 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                         atleast_k=True,
                         atleast_k_variant=False
                     )))
+                if enter_node and exit_node:
+                    return longest_simple_path_binary_search(
+                        G=subgraph,
+                        start=enter_node,
+                        end=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=False
+                    )
                 return longest_simple_path_binary_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
-                    edge_encoding=False,
-                    atleast_k=True,
-                    atleast_k_variant=False
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                 )
             case 4:
                 if subgraph.is_directed() and not enter_node and exit_node:
@@ -1209,21 +1230,28 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                         atleast_k=True,
                         atleast_k_variant=True
                     )))
+                if enter_node and exit_node:
+                    return longest_simple_path_binary_search(
+                        G=subgraph,
+                        start=enter_node,
+                        end=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                        edge_encoding=False,
+                        atleast_k=True,
+                        atleast_k_variant=True
+                    )
                 return longest_simple_path_binary_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
-                    edge_encoding=False,
-                    atleast_k=True,
-                    atleast_k_variant=True
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                 )
             case 5:
                 return longest_simple_path_linear_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                     edge_encoding=True,
                     atleast_k=True
                 )
@@ -1232,7 +1260,7 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                     edge_encoding=True,
                     atleast_k=True,
                 )
@@ -1248,7 +1276,7 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                     path = encoder.longest_simple_path(
                         start=enter_node,
                         end=exit_node,
-                        # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
                     )
                 encoder.delete()
                 return path
@@ -1259,11 +1287,18 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                         start=exit_node,
                         symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
                     )))
-                return longest_simple_path_linear_search_top_down(
+                if enter_node and exit_node:
+                    return longest_simple_path_linear_search_top_down(
+                        G=subgraph,
+                        start=enter_node,
+                        end=exit_node,
+                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                    )
+                return longest_simple_path_binary_search(
                     G=subgraph,
                     start=enter_node,
                     end=exit_node,
-                    # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
+                    symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
                 )
 
     if C.is_directed():
