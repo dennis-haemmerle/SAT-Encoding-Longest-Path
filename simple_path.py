@@ -40,7 +40,7 @@ def read_from_file(filename: str):
                 _, graph_type, num_nodes, _ = parts
                 num_nodes = int(num_nodes)
 
-                if graph_type == "graph":
+                if graph_type == "graph" or graph_type == "tw":
                     G = nx.Graph()
                 elif graph_type == "digraph":
                     G = nx.DiGraph()
@@ -148,10 +148,10 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
         cnf.append([vpool.id((v, k)) for v in end])
 
     # Symmetry breaking
-    if symmetry is not None and G.is_directed():
+    if symmetry is not None:
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
-            if len(orbit) <= 1:
+            if len(orbit) <= 1 or any(v in orbit for v in end):
                 continue
 
             # Only the representative of each orbit is allowed to be the start node.
@@ -165,6 +165,13 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
             for v in orbit:
                 if v != representative:
                     cnf.append([-vpool.id((v, 0))])
+
+            """ # Break path reversal for undirected graphs
+            if not G.is_directed():
+                for u in orbit:
+                    for v in orbit:
+                        if u > v:
+                            cnf.append([-vpool.id((u, 0)), -vpool.id((v, k))]) """
 
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
         if solver.solve():
@@ -266,10 +273,10 @@ def simple_path_of_length_atleast_k(G: nx.Graph, k: int, start=None, end=None, s
                     cnf.append([-vpool.id((e, i)), -vpool.id((v, i + 1))])
 
     # Symmetry breaking
-    if symmetry is not None and G.is_directed():
+    if symmetry is not None:
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
-            if len(orbit) <= 1:
+            if len(orbit) <= 1 or any(v in orbit for v in end):
                 continue
 
             # Only the representative of each orbit is allowed to be the start node.
@@ -363,10 +370,10 @@ def simple_path_of_length_atleast_k_2(G: nx.Graph, k: int, start=None, end=None,
             cnf.append(clause + [vpool.id((e, i)) for e in end])
 
     # Symmetry breaking
-    if symmetry is not None and G.is_directed():
+    if symmetry is not None:
         orbit_groups = symmetry.get("orbit_groups", {})
         for orbit in orbit_groups.values():
-            if len(orbit) <= 1:
+            if len(orbit) <= 1 or any(v in orbit for v in end):
                 continue
 
             # Only the representative of each orbit is allowed to be the start node.
@@ -549,7 +556,7 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
         if symmetry is not None:
             orbit_groups = symmetry.get("orbit_groups", {})
             for orbit in orbit_groups.values():
-                if len(orbit) <= 1:
+                if len(orbit) <= 1 or any(v in orbit for v in end):
                     continue
 
                 # Only the representative of each orbit is allowed to be the start node.
@@ -600,10 +607,10 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
             cnf.append([vpool.id(("end", v)) for v in end])
 
         # Symmetry breaking
-        if symmetry is not None and G.is_directed():
+        if symmetry is not None:
             orbit_groups = symmetry.get("orbit_groups", {})
             for orbit in orbit_groups.values():
-                if len(orbit) <= 1:
+                if len(orbit) <= 1 or any(v in orbit for v in end):
                     continue
 
                 # Only the representative of each orbit is allowed to be the start node.

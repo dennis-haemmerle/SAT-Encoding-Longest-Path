@@ -65,7 +65,11 @@ def main():
 
     args = parser.parse_args()
 
-    G = simple_path.read_from_file(args.graph_file)
+    try:
+        G = simple_path.read_from_file(args.graph_file)
+    except Exception as e:
+        print(f"Error loading '{args.graph_file}': {e}", file=sys.stderr)
+        sys.exit(1)
 
     if args.all:
         for func_id, (desc, func) in CONFIGURATIONS.items():
