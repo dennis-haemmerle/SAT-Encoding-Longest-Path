@@ -166,13 +166,6 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
                 if v != representative:
                     cnf.append([-vpool.id((v, 0))])
 
-            """ # Break path reversal for undirected graphs
-            if not G.is_directed():
-                for u in orbit:
-                    for v in orbit:
-                        if u > v:
-                            cnf.append([-vpool.id((u, 0)), -vpool.id((v, k))]) """
-
     with Solver(name="Cadical195", bootstrap_with=cnf.clauses) as solver:
         if solver.solve():
             model = set(solver.get_model())  # type: ignore
@@ -551,84 +544,93 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
             cnf.append([vpool.id(("start", v)) for v in start])
         if end:
             cnf.append([vpool.id(("end", v)) for v in end])
-
-        # Symmetry breaking
-        if symmetry is not None:
-            orbit_groups = symmetry.get("orbit_groups", {})
-            for orbit in orbit_groups.values():
-                if len(orbit) <= 1 or any(v in orbit for v in end):
-                    continue
-
-                # Only the representative of each orbit is allowed to be the start node.
-                starters = [v for v in orbit if v in start] if start else list(orbit)
-                if not starters:
-                    continue
-
-                representative = min(starters)
-
-                for v in orbit:
-                    if v != representative:
-                        cnf.append([-vpool.id(("start", v))])
     else:
-        endpoint_vars = []
+        if symmetry is not None:
+            start_vars = []
+        end_vars = []
 
         for v in G.nodes():
             incident = [edge_var(e) for e in G.edges(v)]
 
+            if symmetry is not None:
+                # start_var = True <=> deg(v) = 1
+                start_var = vpool.id(("start", v))
+                start_vars.append(start_var)
             # end_var = True <=> deg(v) = 1
             end_var = vpool.id(("end", v))
-            endpoint_vars.append(end_var)
+            end_vars.append(end_var)
 
             if not incident:
+                if symmetry is not None:
+                    cnf.append([-start_var])  # type: ignore
                 cnf.append([-end_var])
                 continue
 
+            if symmetry is not None:
+                cnf.append([-start_var, -end_var])  # type: ignore
+
+            # start_var -> deg(v) = 1
             # end_var -> deg(v) = 1
             exactly_one = CardEnc.equals(lits=incident, bound=1, vpool=vpool, encoding=EncType.seqcounter)
             for clause in exactly_one.clauses:
+                if symmetry is not None:
+                    cnf.append([-start_var] + clause)  # type: ignore
                 cnf.append([-end_var] + clause)
 
-            # deg(v) = 1 -> end_var
+            # deg(v) = 1 -> (start_var v end_var)
             for i, e in enumerate(incident):
-                # atleast one incident -> end_var
-                cnf.append([-e] + incident[:i] + incident[i + 1:] + [end_var])
+                # atleast one incident -> (start_var v end_var)
+                cnf.append([-e] + incident[:i] + incident[i + 1:] + ([start_var, end_var] if symmetry else [end_var]))
 
             for i in range(len(incident)):
                 for j in range(i + 1, len(incident)):
                     # atmost one incident -> end_var
                     cnf.append([-incident[i], -incident[j], -end_var])
 
-            # end_var -> v
+            for i in range(len(incident)):
+                for j in range(i + 1, len(incident)):
+                    # atmost one incident -> (start_var v end_var)
+                    if symmetry is not None:
+                        cnf.append([-incident[i], -incident[j], -start_var])  # type: ignore
+                    cnf.append([-incident[i], -incident[j], -end_var])
+
+            # (start_var v end_var) -> v
+            if symmetry is not None:
+                cnf.append([-start_var, vpool.id(v)])  # type: ignore
             cnf.append([-end_var, vpool.id(v)])
 
         if start:
-            cnf.append([vpool.id(("end", v)) for v in start])
+            cnf.append([vpool.id(("start" if symmetry is not None else "end", v)) for v in start])
         if end:
             cnf.append([vpool.id(("end", v)) for v in end])
 
-        # Symmetry breaking
-        if symmetry is not None:
-            orbit_groups = symmetry.get("orbit_groups", {})
-            for orbit in orbit_groups.values():
-                if len(orbit) <= 1 or any(v in orbit for v in end):
-                    continue
+    # Symmetry breaking
+    if symmetry is not None:
+        orbit_groups = symmetry.get("orbit_groups", {})
+        for orbit in orbit_groups.values():
+            if len(orbit) <= 1 or any(v in orbit for v in end):
+                continue
 
-                # Only the representative of each orbit is allowed to be the start node.
-                starters = [v for v in orbit if v in start] if start else list(orbit)
-                if not starters:
-                    continue
+            # Only the representative of each orbit is allowed to be the start node.
+            starters = [v for v in orbit if v in start] if start else list(orbit)
+            if not starters:
+                continue
 
-                representative = min(starters)
+            representative = min(starters)
 
-                for v in orbit:
-                    if v != representative:
-                        cnf.append([-vpool.id(("end", v))])
+            for v in orbit:
+                if v != representative:
+                    cnf.append([-vpool.id(("start", v))])
 
     if G.is_directed():
         cnf.extend(CardEnc.equals(lits=start_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
         cnf.extend(CardEnc.equals(lits=end_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
     else:
-        cnf.extend(CardEnc.equals(lits=endpoint_vars, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
+        if symmetry:
+            cnf.extend(CardEnc.equals(lits=start_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+            cnf.extend(CardEnc.equals(lits=end_vars, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
+        else:
+            cnf.extend(CardEnc.equals(lits=end_vars, bound=2, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 6. Acyclicity via reachability
     reach = {}

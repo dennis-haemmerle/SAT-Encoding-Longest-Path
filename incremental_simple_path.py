@@ -63,7 +63,7 @@ class IncrementalSimplePathEncoder:
         if symmetry is not None and self.G.is_directed():
             orbit_groups = symmetry.get("orbit_groups", {})
             for orbit in orbit_groups.values():
-                if len(orbit) <= 1:
+                if len(orbit) <= 1 or any(v in orbit for v in self.end):
                     continue
 
                 # Only the representative of each orbit is allowed to be the start node.
