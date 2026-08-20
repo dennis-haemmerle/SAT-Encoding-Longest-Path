@@ -56,8 +56,8 @@ CONFIGURATIONS = {
          lambda G: simple_path.longest_simple_path(G=G, encoding=5)),
     19: ("Preprocessed (Edge Encoding, Atleast k, Binary Search)",
          lambda G: simple_path.longest_simple_path(G=G, encoding=6)),
-    20: ("Preprocessed (Incremental Position Encoding)",
-         lambda G: simple_path.longest_simple_path(G=G, encoding=7)),
+    # 20: ("Preprocessed (Incremental Position Encoding)",
+    #      lambda G: simple_path.longest_simple_path(G=G, encoding=7)),
 
     # Preprocessed Directed Graphs (Brute Force)
     21: ("Preprocessed (Position Encoding, Exactly k - Linear Search, Top-Down)",
@@ -74,8 +74,8 @@ CONFIGURATIONS = {
          lambda G: simple_path.longest_simple_path(G=G, dp=False, encoding=5)),
     27: ("Preprocessed (Edge Encoding, Atleast k, Binary Search)",
          lambda G: simple_path.longest_simple_path(G=G, dp=False, encoding=6)),
-    28: ("Preprocessed (Incremental Position Encoding)",
-         lambda G: simple_path.longest_simple_path(G=G, dp=False, encoding=7)),
+    # 28: ("Preprocessed (Incremental Position Encoding)",
+    #      lambda G: simple_path.longest_simple_path(G=G, dp=False, encoding=7)),
 
     # Preprocessed Directed Graphs (Dynamic Programming)
     29: ("Preprocessed (Position Encoding, Exactly k - Linear Search, Top-Down)",
@@ -92,8 +92,8 @@ CONFIGURATIONS = {
          lambda G: simple_path.longest_simple_path(G=G, dp=True, encoding=5)),
     35: ("Preprocessed (Edge Encoding, Atleast k, Binary Search)",
          lambda G: simple_path.longest_simple_path(G=G, dp=True, encoding=6)),
-    36: ("Preprocessed (Incremental Position Encoding)",
-         lambda G: simple_path.longest_simple_path(G=G, dp=True, encoding=7))
+    # 36: ("Preprocessed (Incremental Position Encoding)",
+    # lambda G: simple_path.longest_simple_path(G=G, dp=True, encoding=7))
 }
 
 

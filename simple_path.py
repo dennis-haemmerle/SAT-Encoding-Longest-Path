@@ -109,14 +109,12 @@ def simple_path_of_length_k(G: nx.Graph, k: int, start=None, end=None, symmetry=
     # 1. Each position is occupied by exactly one node.
     for i in range(k + 1):
         lits = [vpool.id((v, i)) for v in allowed_nodes[i]]
-        block = CardEnc.equals(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-        cnf.extend(block.clauses)
+        cnf.extend(CardEnc.equals(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 2. Each node appears at most once.
     for v in G.nodes():
         lits = [vpool.id((v, i)) for i in allowed_positions[v]]
-        block = CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter)
-        cnf.extend(block.clauses)
+        cnf.extend(CardEnc.atmost(lits=lits, bound=1, vpool=vpool, encoding=EncType.seqcounter).clauses)
 
     # 3. Require that consecutive positions are connected by an edge.
     for u in G.nodes():
@@ -651,9 +649,9 @@ def simple_path_of_length_k_edge_encoding(G: nx.Graph, k: int, start=None, end=N
             # e_{u,v} -> r_{u,v}
             cnf.append([-edge_var(e), reach[(u, v)]])
         else:
-            # e_{u,v} -> (dir_{u,v} v dir_{u,v})
+            # e_{u,v} -> (dir_{u,v} v dir_{v,u})
             cnf.append([-edge_var(e), dir_vars[(u, v)], dir_vars[(v, u)]])
-            # e_{u,v} -> not (dir_{u,v} ∧ dir_{u,v})
+            # e_{u,v} -> not (dir_{u,v} ∧ dir_{v,u})
             cnf.append([-edge_var(e), -dir_vars[(u, v)], -dir_vars[(v, u)]])
 
             # (e ∧ dir(u,v)) -> reach(u,v)
@@ -1148,7 +1146,6 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
             4 = position encoding (atleast k) variant 2 - binary search
             5 = edge encoding (atleast k) - linear search (bottom-up)
             6 = edge encoding (atleast k) - binary search
-            7 = incremental position encoding
         """
         match encoding:
             case 1:
@@ -1273,22 +1270,6 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                     edge_encoding=True,
                     atleast_k=True,
                 )
-            case 7:
-                if subgraph.is_directed() and not enter_node and exit_node:
-                    encoder = IncrementalSimplePathEncoder(reversed_subgraph)
-                    path = list(reversed(encoder.longest_simple_path(
-                        start=exit_node,
-                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
-                    )))
-                else:
-                    encoder = IncrementalSimplePathEncoder(subgraph)
-                    path = encoder.longest_simple_path(
-                        start=enter_node,
-                        end=exit_node,
-                        symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
-                    )
-                encoder.delete()
-                return path
             case _:
                 if subgraph.is_directed() and not enter_node and exit_node:
                     return list(reversed(longest_simple_path_linear_search_top_down(
@@ -1552,10 +1533,6 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
         if len(blocks) == 1:
             subgraph = block_cut_tree.nodes[blocks[0]]["subgraph"]
             symmetry = block_cut_tree.nodes[blocks[0]]["symmetry"]
-            """ return longest_simple_path_binary_search(
-                G=subgraph,
-                # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
-            ) """
             return longest_simple_path(
                 subgraph=subgraph,
                 reversed_subgraph=subgraph,
@@ -1581,12 +1558,6 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                     exit_node = tree_path[i + 1] if i < len(tree_path) - 1 else None
 
                     if enter_node is not None and exit_node is not None and subgraph.number_of_nodes() > 2:
-                        """ block_path = longest_simple_path_linear_search_top_down(
-                            G=subgraph,
-                            start=enter_node,
-                            end=exit_node,
-                            # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None
-                        ) """
                         block_path = longest_simple_path(
                             subgraph=subgraph,
                             reversed_subgraph=subgraph,
@@ -1595,15 +1566,7 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                             symmetry=symmetry,
                             encoding=encoding
                         )
-                        """ if block_path[0] == exit_node:
-                            block_path = list(reversed(block_path)) """
                     else:
-                        """ block_path = longest_simple_path_binary_search(
-                            G=subgraph,
-                            start=enter_node,
-                            end=exit_node,
-                            # symmetry=symmetry if symmetry.get("numorbits") < subgraph.number_of_nodes() else None,
-                        ) """
                         block_path = longest_simple_path(
                             subgraph=subgraph,
                             reversed_subgraph=subgraph,
@@ -1612,10 +1575,6 @@ def longest_simple_path_components(C: nx.Graph, dp: bool = True, encoding: int =
                             symmetry=symmetry,
                             encoding=encoding
                         )
-                        """ if enter_node is not None and block_path[-1] == enter_node:
-                            block_path = list(reversed(block_path))
-                        if exit_node is not None and block_path[0] == exit_node:
-                            block_path = list(reversed(block_path)) """
 
                     if not current_path:
                         current_path.extend(block_path)
@@ -1639,7 +1598,6 @@ def longest_simple_path(G: nx.Graph, dp: bool = True, encoding: int = 0):
         4 = position encoding (atleast k) variant 2 - binary search
         5 = edge encoding (atleast k) - linear search (bottom-up)
         6 = edge encoding (atleast k) - binary search
-        7 = incremental position encoding
     """
     H = optimize(G)
     longest_path = []
